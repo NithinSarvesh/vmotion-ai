@@ -1,0 +1,60 @@
+{
+  "model_name": "ppo_vmotion_v5_masked.zip",
+  "model_version": "v5.0.0",
+  "created_at": 1789799495.3423479,
+  "seed": 42,
+  "environment_version": "v1.0.0",
+  "observation_schema_version": "v1.0.0",
+  "action_schema_version": "v1.0.0",
+  "model_schema_version": "v1.0.0",
+  "observation_dim": 103,
+  "action_space_size": 7,
+  "hyperparameters": {
+    "learning_rate": 0.0003,
+    "batch_size": 64,
+    "gamma": 0.99,
+    "n_steps": 2048,
+    "n_epochs": 10,
+    "gae_lambda": 0.95,
+    "clip_range": 0.2,
+    "ent_coef": 0.03
+  },
+  "total_timesteps": 50000,
+  "training_scenarios": {
+    "total_episodes": 514,
+    "total_steps": 51200,
+    "scenarios": {
+      "NORMAL": {
+        "episodes": 122,
+        "steps": 12200,
+        "percentage_episodes": 23.74,
+        "percentage_steps": 23.83
+      },
+      "CPU_HOTSPOT": {
+        "episodes": 132,
+        "steps": 13200,
+        "percentage_episodes": 25.68,
+        "percentage_steps": 25.78
+      },
+      "RAM_HOTSPOT": {
+        "episodes": 126,
+        "steps": 12600,
+        "percentage_episodes": 24.51,
+        "percentage_steps": 24.61
+      },
+      "MIXED_OVERLOAD": {
+        "episodes": 134,
+        "steps": 13200,
+        "percentage_episodes": 26.07,
+        "percentage_steps": 25.78
+      }
+    }
+  },
+  "curriculum_enabled": false,
+  "evaluation": {
+    "episodes": 10,
+    "mean_reward": -7.93,
+    "std_reward": 155.13
+  },
+  "sha256_checksum": "bc47c2a564d2d2f00e6f8a7b7f376cecb10f471376d75f99a539842486d98afe"
+}

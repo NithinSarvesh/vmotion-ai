@@ -1,0 +1,28 @@
+{
+  "model_name": "ppo_vmotion_v4_masked.zip",
+  "created_at": 1789796910.015186,
+  "seed": 42,
+  "environment_version": "v1.0.0",
+  "observation_schema_version": "v1.0.0",
+  "action_schema_version": "v1.0.0",
+  "model_schema_version": "v1.0.0",
+  "observation_dim": 103,
+  "action_space_size": 7,
+  "hyperparameters": {
+    "learning_rate": 0.0003,
+    "batch_size": 64,
+    "gamma": 0.99,
+    "n_steps": 2048,
+    "n_epochs": 10,
+    "gae_lambda": 0.95,
+    "clip_range": 0.2,
+    "ent_coef": 0.01
+  },
+  "total_timesteps": 25000,
+  "evaluation": {
+    "episodes": 10,
+    "mean_reward": -72.48,
+    "std_reward": 197.92
+  },
+  "sha256_checksum": "450d406ddb4c3e4ab68423f00478825310069756f8c2aceda79627de0d2d8747"
+}

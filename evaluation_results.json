@@ -1,0 +1,1327 @@
+{
+  "benchmark_metadata": {
+    "timestamp": 1789797812.958449,
+    "date": "2026-09-19 06:03:32 UTC",
+    "model_path": "models/ppo_vmotion_v4_masked.zip",
+    "model_exists": true,
+    "model_sha256": "450d406ddb4c3e4ab68423f00478825310069756f8c2aceda79627de0d2d8747",
+    "model_metadata": {
+      "model_name": "ppo_vmotion_v4_masked.zip",
+      "created_at": 1789796910.015186,
+      "seed": 42,
+      "environment_version": "v1.0.0",
+      "observation_schema_version": "v1.0.0",
+      "action_schema_version": "v1.0.0",
+      "model_schema_version": "v1.0.0",
+      "observation_dim": 103,
+      "action_space_size": 7,
+      "hyperparameters": {
+        "learning_rate": 0.0003,
+        "batch_size": 64,
+        "gamma": 0.99,
+        "n_steps": 2048,
+        "n_epochs": 10,
+        "gae_lambda": 0.95,
+        "clip_range": 0.2,
+        "ent_coef": 0.01
+      },
+      "total_timesteps": 25000,
+      "evaluation": {
+        "episodes": 10,
+        "mean_reward": -72.48,
+        "std_reward": 197.92
+      },
+      "sha256_checksum": "450d406ddb4c3e4ab68423f00478825310069756f8c2aceda79627de0d2d8747"
+    },
+    "observation_schema_version": "v1.0.0",
+    "action_schema_version": "v1.0.0",
+    "model_schema_version": "v1.0.0",
+    "observation_dim": 103,
+    "action_space_size": 7,
+    "episodes_per_scenario": 15,
+    "base_seed": 42,
+    "scenarios": [
+      "NORMAL",
+      "CPU_HOTSPOT",
+      "RAM_HOTSPOT",
+      "NETWORK_HOTSPOT",
+      "SLA_CRITICAL",
+      "MIXED_OVERLOAD",
+      "EXPENSIVE_MIGRATION",
+      "UNEVEN_CLUSTER",
+      "RAPID_LOAD_CHANGE",
+      "MIGRATION_COOLDOWN_PRESSURE"
+    ],
+    "scenario_splits": {
+      "TRAIN": [
+        "NORMAL",
+        "CPU_HOTSPOT",
+        "RAM_HOTSPOT",
+        "MIXED_OVERLOAD"
+      ],
+      "VALIDATION": [
+        "SLA_CRITICAL",
+        "UNEVEN_CLUSTER",
+        "RAPID_LOAD_CHANGE"
+      ],
+      "TEST": [
+        "NETWORK_HOTSPOT",
+        "EXPENSIVE_MIGRATION",
+        "MIGRATION_COOLDOWN_PRESSURE"
+      ]
+    },
+    "action_semantics": {
+      "action_space": "Discrete(7)",
+      "action_0": "No-Op (Maintain current VM placement)",
+      "action_1_to_6": "Workload Selection (VM index 0 to 5 in sorted order)",
+      "destination_selection": "Constraint-Aware Destination Selector (Least-loaded alternative online node with sufficient RAM)",
+      "safety_gate": "Deterministic Safety Gate (Pre-dispatch validation)"
+    }
+  },
+  "scenarios": {
+    "NORMAL": {
+      "baseline": {
+        "mean": 212.6,
+        "std": 78.56,
+        "median": 213.84,
+        "min": 79.05,
+        "max": 331.15,
+        "ci_95": [
+          169.09,
+          256.11
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": 212.6,
+        "std_reward": 78.56,
+        "mean_migrations": 8.27,
+        "mean_no_ops": 91.73,
+        "mean_sla_breaches": 50.33,
+        "mean_overload_steps": 0.07,
+        "mean_final_jains": 0.9553,
+        "reward_breakdown_means": {
+          "fairness": 244.58,
+          "cpu_std": -9.7,
+          "stability": 85.27,
+          "sla": -100.67,
+          "overload": -0.27,
+          "migration": -6.61,
+          "invalid": 0.0
+        }
+      },
+      "random": {
+        "mean": 22.43,
+        "std": 97.15,
+        "median": 19.33,
+        "min": -149.72,
+        "max": 157.71,
+        "ci_95": [
+          -31.37,
+          76.24
+        ],
+        "policy": "Random Valid Masked Policy",
+        "episodes": 15,
+        "mean_reward": 22.43,
+        "std_reward": 97.15,
+        "mean_migrations": 73.8,
+        "mean_no_ops": 26.2,
+        "mean_sla_breaches": 50.33,
+        "mean_overload_steps": 5.93,
+        "mean_final_jains": 0.8855,
+        "reward_breakdown_means": {
+          "fairness": 221.74,
+          "cpu_std": -24.2,
+          "stability": 8.6,
+          "sla": -100.67,
+          "overload": -24.0,
+          "migration": -59.04,
+          "invalid": 0.0
+        }
+      },
+      "ppo": {
+        "mean": -85.99,
+        "std": 199.92,
+        "median": -18.95,
+        "min": -452.68,
+        "max": 176.82,
+        "ci_95": [
+          -196.71,
+          24.74
+        ],
+        "policy": "MaskablePPO",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -85.99,
+        "std_reward": 199.92,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 50.33,
+        "mean_overload_steps": 37.2,
+        "mean_final_jains": 0.8251,
+        "mean_inference_latency_ms": 0.926,
+        "reward_breakdown_means": {
+          "fairness": 196.25,
+          "cpu_std": -37.37,
+          "stability": 4.6,
+          "sla": -100.67,
+          "overload": -148.8,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      }
+    },
+    "CPU_HOTSPOT": {
+      "baseline": {
+        "mean": 44.77,
+        "std": 76.26,
+        "median": 38.72,
+        "min": -70.22,
+        "max": 137.98,
+        "ci_95": [
+          2.53,
+          87.01
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": 44.77,
+        "std_reward": 76.26,
+        "mean_migrations": 12.2,
+        "mean_no_ops": 87.8,
+        "mean_sla_breaches": 112.47,
+        "mean_overload_steps": 4.6,
+        "mean_final_jains": 0.9566,
+        "reward_breakdown_means": {
+          "fairness": 241.51,
+          "cpu_std": -13.31,
+          "stability": 69.67,
+          "sla": -224.93,
+          "overload": -18.4,
+          "migration": -9.76,
+          "invalid": 0.0
+        }
+      },
+      "random": {
+        "mean": -169.46,
+        "std": 118.92,
+        "median": -150.12,
+        "min": -444.95,
+        "max": -5.7,
+        "ci_95": [
+          -235.32,
+          -103.6
+        ],
+        "policy": "Random Valid Masked Policy",
+        "episodes": 15,
+        "mean_reward": -169.46,
+        "std_reward": 118.92,
+        "mean_migrations": 74.93,
+        "mean_no_ops": 25.07,
+        "mean_sla_breaches": 112.47,
+        "mean_overload_steps": 20.6,
+        "mean_final_jains": 0.9115,
+        "reward_breakdown_means": {
+          "fairness": 220.25,
+          "cpu_std": -28.02,
+          "stability": 7.73,
+          "sla": -224.93,
+          "overload": -84.53,
+          "migration": -59.95,
+          "invalid": 0.0
+        }
+      },
+      "ppo": {
+        "mean": -499.49,
+        "std": 97.27,
+        "median": -500.26,
+        "min": -701.83,
+        "max": -306.98,
+        "ci_95": [
+          -553.36,
+          -445.61
+        ],
+        "policy": "MaskablePPO",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -499.49,
+        "std_reward": 97.27,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 112.47,
+        "mean_overload_steps": 98.47,
+        "mean_final_jains": 0.7352,
+        "mean_inference_latency_ms": 0.89,
+        "reward_breakdown_means": {
+          "fairness": 171.11,
+          "cpu_std": -51.8,
+          "stability": 0.0,
+          "sla": -224.93,
+          "overload": -393.87,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      }
+    },
+    "RAM_HOTSPOT": {
+      "baseline": {
+        "mean": 199.47,
+        "std": 122.01,
+        "median": 205.74,
+        "min": -98.97,
+        "max": 329.14,
+        "ci_95": [
+          131.9,
+          267.05
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": 199.47,
+        "std_reward": 122.01,
+        "mean_migrations": 2.93,
+        "mean_no_ops": 97.07,
+        "mean_sla_breaches": 40.87,
+        "mean_overload_steps": 2.2,
+        "mean_final_jains": 0.9617,
+        "reward_breakdown_means": {
+          "fairness": 237.56,
+          "cpu_std": -14.34,
+          "stability": 69.13,
+          "sla": -81.73,
+          "overload": -8.8,
+          "migration": -2.35,
+          "invalid": 0.0
+        }
+      },
+      "random": {
+        "mean": 21.87,
+        "std": 112.23,
+        "median": 58.57,
+        "min": -189.58,
+        "max": 158.84,
+        "ci_95": [
+          -40.29,
+          84.03
+        ],
+        "policy": "Random Valid Masked Policy",
+        "episodes": 15,
+        "mean_reward": 21.87,
+        "std_reward": 112.23,
+        "mean_migrations": 75.27,
+        "mean_no_ops": 24.73,
+        "mean_sla_breaches": 40.87,
+        "mean_overload_steps": 9.6,
+        "mean_final_jains": 0.8834,
+        "reward_breakdown_means": {
+          "fairness": 218.9,
+          "cpu_std": -24.95,
+          "stability": 8.53,
+          "sla": -81.73,
+          "overload": -38.67,
+          "migration": -60.21,
+          "invalid": 0.0
+        }
+      },
+      "ppo": {
+        "mean": -142.61,
+        "std": 236.18,
+        "median": -257.63,
+        "min": -438.47,
+        "max": 179.4,
+        "ci_95": [
+          -273.42,
+          -11.8
+        ],
+        "policy": "MaskablePPO",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -142.61,
+        "std_reward": 236.18,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 40.87,
+        "mean_overload_steps": 51.73,
+        "mean_final_jains": 0.7859,
+        "mean_inference_latency_ms": 0.928,
+        "reward_breakdown_means": {
+          "fairness": 186.6,
+          "cpu_std": -41.08,
+          "stability": 0.53,
+          "sla": -81.73,
+          "overload": -206.93,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      }
+    },
+    "NETWORK_HOTSPOT": {
+      "baseline": {
+        "mean": 278.37,
+        "std": 44.93,
+        "median": 301.59,
+        "min": 196.37,
+        "max": 331.43,
+        "ci_95": [
+          253.49,
+          303.25
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": 278.37,
+        "std_reward": 44.93,
+        "mean_migrations": 8.93,
+        "mean_no_ops": 91.07,
+        "mean_sla_breaches": 15.47,
+        "mean_overload_steps": 0.0,
+        "mean_final_jains": 0.9517,
+        "reward_breakdown_means": {
+          "fairness": 243.13,
+          "cpu_std": -10.28,
+          "stability": 83.6,
+          "sla": -30.93,
+          "overload": 0.0,
+          "migration": -7.15,
+          "invalid": 0.0
+        }
+      },
+      "random": {
+        "mean": 110.44,
+        "std": 46.84,
+        "median": 124.34,
+        "min": -1.18,
+        "max": 168.37,
+        "ci_95": [
+          84.5,
+          136.38
+        ],
+        "policy": "Random Valid Masked Policy",
+        "episodes": 15,
+        "mean_reward": 110.44,
+        "std_reward": 46.84,
+        "mean_migrations": 76.27,
+        "mean_no_ops": 23.73,
+        "mean_sla_breaches": 15.47,
+        "mean_overload_steps": 2.07,
+        "mean_final_jains": 0.9325,
+        "reward_breakdown_means": {
+          "fairness": 222.95,
+          "cpu_std": -21.9,
+          "stability": 9.6,
+          "sla": -30.93,
+          "overload": -8.27,
+          "migration": -61.01,
+          "invalid": 0.0
+        }
+      },
+      "ppo": {
+        "mean": -6.23,
+        "std": 176.18,
+        "median": 19.0,
+        "min": -397.15,
+        "max": 222.51,
+        "ci_95": [
+          -103.81,
+          91.34
+        ],
+        "policy": "MaskablePPO",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -6.23,
+        "std_reward": 176.18,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 15.47,
+        "mean_overload_steps": 33.67,
+        "mean_final_jains": 0.811,
+        "mean_inference_latency_ms": 0.883,
+        "reward_breakdown_means": {
+          "fairness": 193.03,
+          "cpu_std": -36.67,
+          "stability": 3.0,
+          "sla": -30.93,
+          "overload": -134.67,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      }
+    },
+    "SLA_CRITICAL": {
+      "baseline": {
+        "mean": -167.06,
+        "std": 233.22,
+        "median": -84.73,
+        "min": -673.2,
+        "max": 108.92,
+        "ci_95": [
+          -296.22,
+          -37.89
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": -167.06,
+        "std_reward": 233.22,
+        "mean_migrations": 25.47,
+        "mean_no_ops": 74.53,
+        "mean_sla_breaches": 172.07,
+        "mean_overload_steps": 17.73,
+        "mean_final_jains": 0.9694,
+        "reward_breakdown_means": {
+          "fairness": 241.51,
+          "cpu_std": -16.26,
+          "stability": 45.0,
+          "sla": -344.13,
+          "overload": -72.8,
+          "migration": -20.37,
+          "invalid": 0.0
+        }
+      },
+      "random": {
+        "mean": -427.16,
+        "std": 203.4,
+        "median": -421.78,
+        "min": -891.13,
+        "max": -175.56,
+        "ci_95": [
+          -539.81,
+          -314.51
+        ],
+        "policy": "Random Valid Masked Policy",
+        "episodes": 15,
+        "mean_reward": -427.16,
+        "std_reward": 203.4,
+        "mean_migrations": 75.13,
+        "mean_no_ops": 24.87,
+        "mean_sla_breaches": 172.07,
+        "mean_overload_steps": 47.47,
+        "mean_final_jains": 0.9027,
+        "reward_breakdown_means": {
+          "fairness": 222.31,
+          "cpu_std": -31.1,
+          "stability": 5.07,
+          "sla": -344.13,
+          "overload": -219.2,
+          "migration": -60.11,
+          "invalid": 0.0
+        }
+      },
+      "ppo": {
+        "mean": -573.2,
+        "std": 223.16,
+        "median": -530.91,
+        "min": -1084.58,
+        "max": -203.17,
+        "ci_95": [
+          -696.8,
+          -449.61
+        ],
+        "policy": "MaskablePPO",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -573.2,
+        "std_reward": 223.16,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 172.07,
+        "mean_overload_steps": 85.87,
+        "mean_final_jains": 0.8206,
+        "mean_inference_latency_ms": 0.898,
+        "reward_breakdown_means": {
+          "fairness": 199.58,
+          "cpu_std": -46.78,
+          "stability": 0.0,
+          "sla": -344.13,
+          "overload": -381.87,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      }
+    },
+    "MIXED_OVERLOAD": {
+      "baseline": {
+        "mean": -277.51,
+        "std": 197.35,
+        "median": -278.28,
+        "min": -634.57,
+        "max": 115.27,
+        "ci_95": [
+          -386.81,
+          -168.21
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": -277.51,
+        "std_reward": 197.35,
+        "mean_migrations": 28.33,
+        "mean_no_ops": 71.67,
+        "mean_sla_breaches": 183.0,
+        "mean_overload_steps": 33.07,
+        "mean_final_jains": 0.9635,
+        "reward_breakdown_means": {
+          "fairness": 238.82,
+          "cpu_std": -20.73,
+          "stability": 26.67,
+          "sla": -366.0,
+          "overload": -133.6,
+          "migration": -22.67,
+          "invalid": 0.0
+        }
+      },
+      "random": {
+        "mean": -486.42,
+        "std": 223.51,
+        "median": -508.63,
+        "min": -971.63,
+        "max": -137.42,
+        "ci_95": [
+          -610.21,
+          -362.63
+        ],
+        "policy": "Random Valid Masked Policy",
+        "episodes": 15,
+        "mean_reward": -486.42,
+        "std_reward": 223.51,
+        "mean_migrations": 73.67,
+        "mean_no_ops": 26.33,
+        "mean_sla_breaches": 183.0,
+        "mean_overload_steps": 56.27,
+        "mean_final_jains": 0.8772,
+        "reward_breakdown_means": {
+          "fairness": 224.89,
+          "cpu_std": -31.04,
+          "stability": 4.67,
+          "sla": -366.0,
+          "overload": -260.0,
+          "migration": -58.93,
+          "invalid": 0.0
+        }
+      },
+      "ppo": {
+        "mean": -686.47,
+        "std": 216.26,
+        "median": -688.32,
+        "min": -1108.45,
+        "max": -325.99,
+        "ci_95": [
+          -806.24,
+          -566.69
+        ],
+        "policy": "MaskablePPO",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -686.47,
+        "std_reward": 216.26,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 183.0,
+        "mean_overload_steps": 99.47,
+        "mean_final_jains": 0.7829,
+        "mean_inference_latency_ms": 0.878,
+        "reward_breakdown_means": {
+          "fairness": 194.53,
+          "cpu_std": -51.26,
+          "stability": 0.0,
+          "sla": -366.0,
+          "overload": -463.73,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      }
+    },
+    "EXPENSIVE_MIGRATION": {
+      "baseline": {
+        "mean": 221.08,
+        "std": 54.28,
+        "median": 216.74,
+        "min": 113.28,
+        "max": 289.11,
+        "ci_95": [
+          191.02,
+          251.15
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": 221.08,
+        "std_reward": 54.28,
+        "mean_migrations": 8.53,
+        "mean_no_ops": 91.47,
+        "mean_sla_breaches": 42.8,
+        "mean_overload_steps": 0.07,
+        "mean_final_jains": 0.9681,
+        "reward_breakdown_means": {
+          "fairness": 243.6,
+          "cpu_std": -9.71,
+          "stability": 85.87,
+          "sla": -85.6,
+          "overload": -0.27,
+          "migration": -12.8,
+          "invalid": 0.0
+        }
+      },
+      "random": {
+        "mean": -16.93,
+        "std": 74.92,
+        "median": 7.49,
+        "min": -205.98,
+        "max": 80.26,
+        "ci_95": [
+          -58.42,
+          24.57
+        ],
+        "policy": "Random Valid Masked Policy",
+        "episodes": 15,
+        "mean_reward": -16.93,
+        "std_reward": 74.92,
+        "mean_migrations": 75.67,
+        "mean_no_ops": 24.33,
+        "mean_sla_breaches": 42.8,
+        "mean_overload_steps": 6.2,
+        "mean_final_jains": 0.9037,
+        "reward_breakdown_means": {
+          "fairness": 221.54,
+          "cpu_std": -23.23,
+          "stability": 8.67,
+          "sla": -85.6,
+          "overload": -24.8,
+          "migration": -113.5,
+          "invalid": 0.0
+        }
+      },
+      "ppo": {
+        "mean": -85.76,
+        "std": 173.94,
+        "median": -42.91,
+        "min": -423.63,
+        "max": 127.95,
+        "ci_95": [
+          -182.09,
+          10.58
+        ],
+        "policy": "MaskablePPO",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -85.76,
+        "std_reward": 173.94,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 42.8,
+        "mean_overload_steps": 36.87,
+        "mean_final_jains": 0.7627,
+        "mean_inference_latency_ms": 0.936,
+        "reward_breakdown_means": {
+          "fairness": 187.42,
+          "cpu_std": -40.11,
+          "stability": 0.0,
+          "sla": -85.6,
+          "overload": -147.47,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      }
+    },
+    "UNEVEN_CLUSTER": {
+      "baseline": {
+        "mean": 207.61,
+        "std": 90.33,
+        "median": 231.72,
+        "min": -36.59,
+        "max": 312.13,
+        "ci_95": [
+          157.58,
+          257.64
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": 207.61,
+        "std_reward": 90.33,
+        "mean_migrations": 9.47,
+        "mean_no_ops": 90.53,
+        "mean_sla_breaches": 43.53,
+        "mean_overload_steps": 3.2,
+        "mean_final_jains": 0.9646,
+        "reward_breakdown_means": {
+          "fairness": 243.05,
+          "cpu_std": -10.46,
+          "stability": 82.47,
+          "sla": -87.07,
+          "overload": -12.8,
+          "migration": -7.57,
+          "invalid": 0.0
+        }
+      },
+      "random": {
+        "mean": 22.82,
+        "std": 97.52,
+        "median": 36.72,
+        "min": -169.85,
+        "max": 126.33,
+        "ci_95": [
+          -31.19,
+          76.83
+        ],
+        "policy": "Random Valid Masked Policy",
+        "episodes": 15,
+        "mean_reward": 22.82,
+        "std_reward": 97.52,
+        "mean_migrations": 75.07,
+        "mean_no_ops": 24.93,
+        "mean_sla_breaches": 43.53,
+        "mean_overload_steps": 8.53,
+        "mean_final_jains": 0.9339,
+        "reward_breakdown_means": {
+          "fairness": 221.16,
+          "cpu_std": -24.82,
+          "stability": 8.53,
+          "sla": -87.07,
+          "overload": -34.93,
+          "migration": -60.05,
+          "invalid": 0.0
+        }
+      },
+      "ppo": {
+        "mean": -418.53,
+        "std": 78.96,
+        "median": -402.59,
+        "min": -564.62,
+        "max": -282.36,
+        "ci_95": [
+          -462.26,
+          -374.8
+        ],
+        "policy": "MaskablePPO",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -418.53,
+        "std_reward": 78.96,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 43.53,
+        "mean_overload_steps": 98.47,
+        "mean_final_jains": 0.5198,
+        "mean_inference_latency_ms": 0.889,
+        "reward_breakdown_means": {
+          "fairness": 124.64,
+          "cpu_std": -62.24,
+          "stability": 0.0,
+          "sla": -87.07,
+          "overload": -393.87,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      }
+    },
+    "RAPID_LOAD_CHANGE": {
+      "baseline": {
+        "mean": 116.63,
+        "std": 77.52,
+        "median": 119.63,
+        "min": -18.16,
+        "max": 237.25,
+        "ci_95": [
+          73.69,
+          159.56
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": 116.63,
+        "std_reward": 77.52,
+        "mean_migrations": 18.0,
+        "mean_no_ops": 82.0,
+        "mean_sla_breaches": 68.27,
+        "mean_overload_steps": 4.33,
+        "mean_final_jains": 0.931,
+        "reward_breakdown_means": {
+          "fairness": 237.86,
+          "cpu_std": -14.3,
+          "stability": 61.33,
+          "sla": -136.53,
+          "overload": -17.33,
+          "migration": -14.4,
+          "invalid": 0.0
+        }
+      },
+      "random": {
+        "mean": -36.45,
+        "std": 92.75,
+        "median": -29.06,
+        "min": -160.83,
+        "max": 123.65,
+        "ci_95": [
+          -87.82,
+          14.92
+        ],
+        "policy": "Random Valid Masked Policy",
+        "episodes": 15,
+        "mean_reward": -36.45,
+        "std_reward": 92.75,
+        "mean_migrations": 75.33,
+        "mean_no_ops": 24.67,
+        "mean_sla_breaches": 68.27,
+        "mean_overload_steps": 9.53,
+        "mean_final_jains": 0.8205,
+        "reward_breakdown_means": {
+          "fairness": 218.74,
+          "cpu_std": -25.65,
+          "stability": 7.53,
+          "sla": -136.53,
+          "overload": -40.27,
+          "migration": -60.27,
+          "invalid": 0.0
+        }
+      },
+      "ppo": {
+        "mean": -69.0,
+        "std": 131.32,
+        "median": -33.78,
+        "min": -403.4,
+        "max": 114.9,
+        "ci_95": [
+          -141.73,
+          3.73
+        ],
+        "policy": "MaskablePPO",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -69.0,
+        "std_reward": 131.32,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 68.27,
+        "mean_overload_steps": 28.2,
+        "mean_final_jains": 0.8645,
+        "mean_inference_latency_ms": 0.869,
+        "reward_breakdown_means": {
+          "fairness": 202.73,
+          "cpu_std": -33.67,
+          "stability": 11.53,
+          "sla": -136.53,
+          "overload": -113.07,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      }
+    },
+    "MIGRATION_COOLDOWN_PRESSURE": {
+      "baseline": {
+        "mean": 233.13,
+        "std": 70.53,
+        "median": 267.7,
+        "min": 117.41,
+        "max": 337.3,
+        "ci_95": [
+          194.06,
+          272.19
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": 233.13,
+        "std_reward": 70.53,
+        "mean_migrations": 5.33,
+        "mean_no_ops": 94.67,
+        "mean_sla_breaches": 44.4,
+        "mean_overload_steps": 0.0,
+        "mean_final_jains": 0.9828,
+        "reward_breakdown_means": {
+          "fairness": 244.94,
+          "cpu_std": -8.67,
+          "stability": 89.93,
+          "sla": -88.8,
+          "overload": 0.0,
+          "migration": -4.27,
+          "invalid": 0.0
+        }
+      },
+      "random": {
+        "mean": 66.32,
+        "std": 87.18,
+        "median": 91.7,
+        "min": -105.11,
+        "max": 165.17,
+        "ci_95": [
+          18.04,
+          114.6
+        ],
+        "policy": "Random Valid Masked Policy",
+        "episodes": 15,
+        "mean_reward": 66.32,
+        "std_reward": 87.18,
+        "mean_migrations": 56.0,
+        "mean_no_ops": 44.0,
+        "mean_sla_breaches": 44.4,
+        "mean_overload_steps": 3.13,
+        "mean_final_jains": 0.8936,
+        "reward_breakdown_means": {
+          "fairness": 220.34,
+          "cpu_std": -23.75,
+          "stability": 15.87,
+          "sla": -88.8,
+          "overload": -12.53,
+          "migration": -44.8,
+          "invalid": 0.0
+        }
+      },
+      "ppo": {
+        "mean": -67.48,
+        "std": 206.6,
+        "median": 14.89,
+        "min": -469.01,
+        "max": 175.75,
+        "ci_95": [
+          -181.91,
+          46.94
+        ],
+        "policy": "MaskablePPO",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -67.48,
+        "std_reward": 206.6,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 44.4,
+        "mean_overload_steps": 32.27,
+        "mean_final_jains": 0.774,
+        "mean_inference_latency_ms": 0.902,
+        "reward_breakdown_means": {
+          "fairness": 189.44,
+          "cpu_std": -39.05,
+          "stability": 0.0,
+          "sla": -88.8,
+          "overload": -129.07,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      }
+    }
+  },
+  "split_aggregates": {
+    "TRAIN": {
+      "baseline": {
+        "mean": 44.83,
+        "std": 228.01,
+        "median": 122.12,
+        "min": -277.51,
+        "max": 212.6,
+        "ci_95": [
+          -317.93,
+          407.59
+        ],
+        "mean_reward": 44.83,
+        "std_reward": 228.01,
+        "mean_migrations": 12.93,
+        "mean_no_ops": 87.07,
+        "mean_sla_breaches": 96.67,
+        "mean_overload_steps": 9.98,
+        "mean_final_jains": 0.9593,
+        "reward_breakdown_means": {
+          "fairness": 240.62,
+          "cpu_std": -14.52,
+          "stability": 62.69,
+          "sla": -193.33,
+          "overload": -40.27,
+          "migration": -10.35,
+          "invalid": 0.0
+        }
+      },
+      "random": {
+        "mean": -152.9,
+        "std": 240.0,
+        "median": -73.8,
+        "min": -486.42,
+        "max": 22.43,
+        "ci_95": [
+          -534.73,
+          228.94
+        ],
+        "mean_reward": -152.9,
+        "std_reward": 240.0,
+        "mean_migrations": 74.42,
+        "mean_no_ops": 25.58,
+        "mean_sla_breaches": 96.67,
+        "mean_overload_steps": 23.1,
+        "mean_final_jains": 0.8894,
+        "reward_breakdown_means": {
+          "fairness": 221.44,
+          "cpu_std": -27.05,
+          "stability": 7.38,
+          "sla": -193.33,
+          "overload": -101.8,
+          "migration": -59.53,
+          "invalid": 0.0
+        }
+      },
+      "ppo": {
+        "mean": -353.64,
+        "std": 287.64,
+        "median": -321.05,
+        "min": -686.47,
+        "max": -85.99,
+        "ci_95": [
+          -811.28,
+          104.0
+        ],
+        "mean_reward": -353.64,
+        "std_reward": 287.64,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 96.67,
+        "mean_overload_steps": 71.72,
+        "mean_final_jains": 0.7823,
+        "reward_breakdown_means": {
+          "fairness": 187.12,
+          "cpu_std": -45.38,
+          "stability": 1.28,
+          "sla": -193.33,
+          "overload": -303.33,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      }
+    },
+    "VALIDATION": {
+      "baseline": {
+        "mean": 52.39,
+        "std": 195.42,
+        "median": 116.63,
+        "min": -167.06,
+        "max": 207.61,
+        "ci_95": [
+          -433.1,
+          537.88
+        ],
+        "mean_reward": 52.39,
+        "std_reward": 195.42,
+        "mean_migrations": 17.65,
+        "mean_no_ops": 82.35,
+        "mean_sla_breaches": 94.62,
+        "mean_overload_steps": 8.42,
+        "mean_final_jains": 0.955,
+        "reward_breakdown_means": {
+          "fairness": 240.81,
+          "cpu_std": -13.67,
+          "stability": 62.93,
+          "sla": -189.24,
+          "overload": -34.31,
+          "migration": -14.11,
+          "invalid": 0.0
+        }
+      },
+      "random": {
+        "mean": -146.93,
+        "std": 244.49,
+        "median": -36.45,
+        "min": -427.16,
+        "max": 22.82,
+        "ci_95": [
+          -754.32,
+          460.46
+        ],
+        "mean_reward": -146.93,
+        "std_reward": 244.49,
+        "mean_migrations": 75.18,
+        "mean_no_ops": 24.82,
+        "mean_sla_breaches": 94.62,
+        "mean_overload_steps": 21.84,
+        "mean_final_jains": 0.8857,
+        "reward_breakdown_means": {
+          "fairness": 220.74,
+          "cpu_std": -27.19,
+          "stability": 7.04,
+          "sla": -189.24,
+          "overload": -98.13,
+          "migration": -60.14,
+          "invalid": 0.0
+        }
+      },
+      "ppo": {
+        "mean": -353.58,
+        "std": 258.3,
+        "median": -418.53,
+        "min": -573.2,
+        "max": -69.0,
+        "ci_95": [
+          -995.28,
+          288.13
+        ],
+        "mean_reward": -353.58,
+        "std_reward": 258.3,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 94.62,
+        "mean_overload_steps": 70.85,
+        "mean_final_jains": 0.735,
+        "reward_breakdown_means": {
+          "fairness": 175.65,
+          "cpu_std": -47.56,
+          "stability": 3.84,
+          "sla": -189.24,
+          "overload": -296.27,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      }
+    },
+    "TEST": {
+      "baseline": {
+        "mean": 244.19,
+        "std": 30.2,
+        "median": 233.13,
+        "min": 221.08,
+        "max": 278.37,
+        "ci_95": [
+          169.15,
+          319.23
+        ],
+        "mean_reward": 244.19,
+        "std_reward": 30.2,
+        "mean_migrations": 7.6,
+        "mean_no_ops": 92.4,
+        "mean_sla_breaches": 34.22,
+        "mean_overload_steps": 0.02,
+        "mean_final_jains": 0.9675,
+        "reward_breakdown_means": {
+          "fairness": 243.89,
+          "cpu_std": -9.55,
+          "stability": 86.47,
+          "sla": -68.44,
+          "overload": -0.09,
+          "migration": -8.07,
+          "invalid": 0.0
+        }
+      },
+      "random": {
+        "mean": 53.28,
+        "std": 64.68,
+        "median": 66.32,
+        "min": -16.93,
+        "max": 110.44,
+        "ci_95": [
+          -107.41,
+          213.96
+        ],
+        "mean_reward": 53.28,
+        "std_reward": 64.68,
+        "mean_migrations": 69.31,
+        "mean_no_ops": 30.69,
+        "mean_sla_breaches": 34.22,
+        "mean_overload_steps": 3.8,
+        "mean_final_jains": 0.9099,
+        "reward_breakdown_means": {
+          "fairness": 221.61,
+          "cpu_std": -22.96,
+          "stability": 11.38,
+          "sla": -68.44,
+          "overload": -15.2,
+          "migration": -73.1,
+          "invalid": 0.0
+        }
+      },
+      "ppo": {
+        "mean": -53.16,
+        "std": 41.65,
+        "median": -67.48,
+        "min": -85.76,
+        "max": -6.23,
+        "ci_95": [
+          -156.64,
+          50.33
+        ],
+        "mean_reward": -53.16,
+        "std_reward": 41.65,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 34.22,
+        "mean_overload_steps": 34.27,
+        "mean_final_jains": 0.7826,
+        "reward_breakdown_means": {
+          "fairness": 189.96,
+          "cpu_std": -38.61,
+          "stability": 1.0,
+          "sla": -68.44,
+          "overload": -137.07,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      }
+    }
+  },
+  "overall": {
+    "baseline": {
+      "mean": 106.91,
+      "std": 187.09,
+      "median": 203.54,
+      "min": -277.51,
+      "max": 278.37,
+      "ci_95": [
+        -26.92,
+        240.74
+      ],
+      "mean_reward": 106.91,
+      "std_reward": 187.09,
+      "mean_migrations": 12.75,
+      "mean_no_ops": 87.25,
+      "mean_sla_breaches": 77.32,
+      "mean_overload_steps": 6.53,
+      "mean_final_jains": 0.9605,
+      "reward_breakdown_means": {
+        "fairness": 241.66,
+        "cpu_std": -12.78,
+        "stability": 69.89,
+        "sla": -154.64,
+        "overload": -26.43,
+        "migration": -10.8,
+        "invalid": 0.0
+      }
+    },
+    "random": {
+      "mean": -89.25,
+      "std": 207.59,
+      "median": 2.47,
+      "min": -486.42,
+      "max": 110.44,
+      "ci_95": [
+        -237.74,
+        59.24
+      ],
+      "mean_reward": -89.25,
+      "std_reward": 207.59,
+      "mean_migrations": 73.11,
+      "mean_no_ops": 26.89,
+      "mean_sla_breaches": 77.32,
+      "mean_overload_steps": 16.93,
+      "mean_final_jains": 0.8944,
+      "reward_breakdown_means": {
+        "fairness": 221.28,
+        "cpu_std": -25.87,
+        "stability": 8.48,
+        "sla": -154.64,
+        "overload": -74.72,
+        "migration": -63.79,
+        "invalid": 0.0
+      }
+    },
+    "ppo": {
+      "mean": -263.48,
+      "std": 252.7,
+      "median": -114.3,
+      "min": -686.47,
+      "max": -6.23,
+      "ci_95": [
+        -444.23,
+        -82.72
+      ],
+      "mean_reward": -263.48,
+      "std_reward": 252.7,
+      "mean_migrations": 0.0,
+      "mean_no_ops": 100.0,
+      "mean_sla_breaches": 77.32,
+      "mean_overload_steps": 60.22,
+      "mean_final_jains": 0.7682,
+      "reward_breakdown_means": {
+        "fairness": 184.53,
+        "cpu_std": -44.0,
+        "stability": 1.97,
+        "sla": -154.64,
+        "overload": -251.34,
+        "migration": 0.0,
+        "invalid": 0.0
+      }
+    }
+  }
+}

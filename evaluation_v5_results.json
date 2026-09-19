@@ -1,0 +1,1684 @@
+{
+  "benchmark_metadata": {
+    "timestamp": 1789799576.5455863,
+    "date": "2026-09-19 06:32:56 UTC",
+    "v4_path": "models/ppo_vmotion_v4_masked.zip",
+    "v5_path": "models/ppo_vmotion_v5_masked.zip",
+    "episodes_per_scenario": 15,
+    "base_seed": 42,
+    "scenarios": [
+      "NORMAL",
+      "CPU_HOTSPOT",
+      "RAM_HOTSPOT",
+      "NETWORK_HOTSPOT",
+      "SLA_CRITICAL",
+      "MIXED_OVERLOAD",
+      "EXPENSIVE_MIGRATION",
+      "UNEVEN_CLUSTER",
+      "RAPID_LOAD_CHANGE",
+      "MIGRATION_COOLDOWN_PRESSURE"
+    ],
+    "scenario_splits": {
+      "TRAIN": [
+        "NORMAL",
+        "CPU_HOTSPOT",
+        "RAM_HOTSPOT",
+        "MIXED_OVERLOAD"
+      ],
+      "VALIDATION": [
+        "SLA_CRITICAL",
+        "UNEVEN_CLUSTER",
+        "RAPID_LOAD_CHANGE"
+      ],
+      "TEST": [
+        "NETWORK_HOTSPOT",
+        "EXPENSIVE_MIGRATION",
+        "MIGRATION_COOLDOWN_PRESSURE"
+      ]
+    }
+  },
+  "scenarios": {
+    "NORMAL": {
+      "baseline": {
+        "mean": 71.94,
+        "std": 208.56,
+        "median": 94.7,
+        "min": -527.79,
+        "max": 331.15,
+        "ci_95": [
+          -43.57,
+          187.45
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": 71.94,
+        "std_reward": 208.56,
+        "mean_migrations": 9.27,
+        "mean_no_ops": 77.53,
+        "mean_sla_breaches": 50.33,
+        "mean_overload_steps": 0.13,
+        "mean_final_jains": 0.9703,
+        "mean_unique_vms": 2.8,
+        "mean_unique_destinations": 2.67,
+        "reward_breakdown_means": {
+          "fairness": 244.65,
+          "cpu_std": -9.63,
+          "stability": 77.53,
+          "sla": -100.67,
+          "overload": -0.53,
+          "migration": -7.41,
+          "invalid": -132.0
+        }
+      },
+      "random": {
+        "mean": 22.43,
+        "std": 97.15,
+        "median": 19.33,
+        "min": -149.72,
+        "max": 157.71,
+        "ci_95": [
+          -31.37,
+          76.24
+        ],
+        "policy": "Random Valid Policy",
+        "episodes": 15,
+        "mean_reward": 22.43,
+        "std_reward": 97.15,
+        "mean_migrations": 73.8,
+        "mean_no_ops": 26.2,
+        "mean_sla_breaches": 50.33,
+        "mean_overload_steps": 5.93,
+        "mean_final_jains": 0.8855,
+        "mean_unique_vms": 6.0,
+        "mean_unique_destinations": 3.0,
+        "reward_breakdown_means": {
+          "fairness": 221.74,
+          "cpu_std": -24.2,
+          "stability": 8.6,
+          "sla": -100.67,
+          "overload": -24.0,
+          "migration": -59.04,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v4": {
+        "mean": -85.99,
+        "std": 199.92,
+        "median": -18.95,
+        "min": -452.68,
+        "max": 176.82,
+        "ci_95": [
+          -196.71,
+          24.74
+        ],
+        "policy": "PPO V4",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -85.99,
+        "std_reward": 199.92,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 50.33,
+        "mean_overload_steps": 37.2,
+        "mean_final_jains": 0.8251,
+        "mean_unique_vms": 0.0,
+        "mean_unique_destinations": 0.0,
+        "mean_entropy": 1.5852,
+        "mean_latency_ms": 0.89,
+        "reward_breakdown_means": {
+          "fairness": 196.25,
+          "cpu_std": -37.37,
+          "stability": 4.6,
+          "sla": -100.67,
+          "overload": -148.8,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v5": {
+        "mean": 159.1,
+        "std": 94.09,
+        "median": 151.07,
+        "min": 20.69,
+        "max": 333.51,
+        "ci_95": [
+          106.99,
+          211.21
+        ],
+        "policy": "PPO V5",
+        "model_path": "models/ppo_vmotion_v5_masked.zip",
+        "episodes": 15,
+        "mean_reward": 159.1,
+        "std_reward": 94.09,
+        "mean_migrations": 1.07,
+        "mean_no_ops": 98.93,
+        "mean_sla_breaches": 50.33,
+        "mean_overload_steps": 0.8,
+        "mean_final_jains": 0.9317,
+        "mean_unique_vms": 1.07,
+        "mean_unique_destinations": 1.07,
+        "mean_entropy": 1.7532,
+        "mean_latency_ms": 1.02,
+        "reward_breakdown_means": {
+          "fairness": 231.1,
+          "cpu_std": -18.81,
+          "stability": 51.53,
+          "sla": -100.67,
+          "overload": -3.2,
+          "migration": -0.85,
+          "invalid": 0.0
+        }
+      }
+    },
+    "CPU_HOTSPOT": {
+      "baseline": {
+        "mean": -220.55,
+        "std": 224.71,
+        "median": -175.46,
+        "min": -568.33,
+        "max": 121.08,
+        "ci_95": [
+          -345.01,
+          -96.1
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": -220.55,
+        "std_reward": 224.71,
+        "mean_migrations": 13.73,
+        "mean_no_ops": 60.67,
+        "mean_sla_breaches": 112.47,
+        "mean_overload_steps": 4.47,
+        "mean_final_jains": 0.9611,
+        "mean_unique_vms": 3.27,
+        "mean_unique_destinations": 2.87,
+        "reward_breakdown_means": {
+          "fairness": 241.71,
+          "cpu_std": -13.14,
+          "stability": 60.67,
+          "sla": -224.93,
+          "overload": -17.87,
+          "migration": -10.99,
+          "invalid": -256.0
+        }
+      },
+      "random": {
+        "mean": -169.46,
+        "std": 118.92,
+        "median": -150.12,
+        "min": -444.95,
+        "max": -5.7,
+        "ci_95": [
+          -235.32,
+          -103.6
+        ],
+        "policy": "Random Valid Policy",
+        "episodes": 15,
+        "mean_reward": -169.46,
+        "std_reward": 118.92,
+        "mean_migrations": 74.93,
+        "mean_no_ops": 25.07,
+        "mean_sla_breaches": 112.47,
+        "mean_overload_steps": 20.6,
+        "mean_final_jains": 0.9115,
+        "mean_unique_vms": 6.0,
+        "mean_unique_destinations": 3.0,
+        "reward_breakdown_means": {
+          "fairness": 220.24,
+          "cpu_std": -28.02,
+          "stability": 7.73,
+          "sla": -224.93,
+          "overload": -84.53,
+          "migration": -59.95,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v4": {
+        "mean": -499.49,
+        "std": 97.27,
+        "median": -500.26,
+        "min": -701.83,
+        "max": -306.98,
+        "ci_95": [
+          -553.36,
+          -445.61
+        ],
+        "policy": "PPO V4",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -499.49,
+        "std_reward": 97.27,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 112.47,
+        "mean_overload_steps": 98.47,
+        "mean_final_jains": 0.7352,
+        "mean_unique_vms": 0.0,
+        "mean_unique_destinations": 0.0,
+        "mean_entropy": 1.681,
+        "mean_latency_ms": 0.87,
+        "reward_breakdown_means": {
+          "fairness": 171.11,
+          "cpu_std": -51.8,
+          "stability": 0.0,
+          "sla": -224.93,
+          "overload": -393.87,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v5": {
+        "mean": -34.76,
+        "std": 106.25,
+        "median": -11.81,
+        "min": -271.4,
+        "max": 161.51,
+        "ci_95": [
+          -93.6,
+          24.09
+        ],
+        "policy": "PPO V5",
+        "model_path": "models/ppo_vmotion_v5_masked.zip",
+        "episodes": 15,
+        "mean_reward": -34.76,
+        "std_reward": 106.25,
+        "mean_migrations": 1.4,
+        "mean_no_ops": 98.6,
+        "mean_sla_breaches": 112.47,
+        "mean_overload_steps": 6.73,
+        "mean_final_jains": 0.9373,
+        "mean_unique_vms": 1.27,
+        "mean_unique_destinations": 1.13,
+        "mean_entropy": 1.7869,
+        "mean_latency_ms": 0.99,
+        "reward_breakdown_means": {
+          "fairness": 227.69,
+          "cpu_std": -24.86,
+          "stability": 15.4,
+          "sla": -224.93,
+          "overload": -26.93,
+          "migration": -1.12,
+          "invalid": 0.0
+        }
+      }
+    },
+    "RAM_HOTSPOT": {
+      "baseline": {
+        "mean": 186.63,
+        "std": 126.8,
+        "median": 150.73,
+        "min": -98.97,
+        "max": 329.14,
+        "ci_95": [
+          116.4,
+          256.86
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": 186.63,
+        "std_reward": 126.8,
+        "mean_migrations": 3.13,
+        "mean_no_ops": 95.73,
+        "mean_sla_breaches": 40.87,
+        "mean_overload_steps": 2.2,
+        "mean_final_jains": 0.9624,
+        "mean_unique_vms": 2.07,
+        "mean_unique_destinations": 1.53,
+        "reward_breakdown_means": {
+          "fairness": 237.52,
+          "cpu_std": -14.38,
+          "stability": 67.87,
+          "sla": -81.73,
+          "overload": -8.8,
+          "migration": -2.51,
+          "invalid": -11.33
+        }
+      },
+      "random": {
+        "mean": 21.87,
+        "std": 112.23,
+        "median": 58.57,
+        "min": -189.58,
+        "max": 158.84,
+        "ci_95": [
+          -40.29,
+          84.03
+        ],
+        "policy": "Random Valid Policy",
+        "episodes": 15,
+        "mean_reward": 21.87,
+        "std_reward": 112.23,
+        "mean_migrations": 75.27,
+        "mean_no_ops": 24.73,
+        "mean_sla_breaches": 40.87,
+        "mean_overload_steps": 9.6,
+        "mean_final_jains": 0.8834,
+        "mean_unique_vms": 6.0,
+        "mean_unique_destinations": 3.0,
+        "reward_breakdown_means": {
+          "fairness": 218.9,
+          "cpu_std": -24.95,
+          "stability": 8.53,
+          "sla": -81.73,
+          "overload": -38.67,
+          "migration": -60.21,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v4": {
+        "mean": -142.61,
+        "std": 236.18,
+        "median": -257.63,
+        "min": -438.47,
+        "max": 179.4,
+        "ci_95": [
+          -273.42,
+          -11.8
+        ],
+        "policy": "PPO V4",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -142.61,
+        "std_reward": 236.18,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 40.87,
+        "mean_overload_steps": 51.73,
+        "mean_final_jains": 0.7859,
+        "mean_unique_vms": 0.0,
+        "mean_unique_destinations": 0.0,
+        "mean_entropy": 1.5804,
+        "mean_latency_ms": 0.84,
+        "reward_breakdown_means": {
+          "fairness": 186.6,
+          "cpu_std": -41.08,
+          "stability": 0.53,
+          "sla": -81.73,
+          "overload": -206.93,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v5": {
+        "mean": 151.44,
+        "std": 77.1,
+        "median": 157.85,
+        "min": -8.13,
+        "max": 291.01,
+        "ci_95": [
+          108.73,
+          194.14
+        ],
+        "policy": "PPO V5",
+        "model_path": "models/ppo_vmotion_v5_masked.zip",
+        "episodes": 15,
+        "mean_reward": 151.44,
+        "std_reward": 77.1,
+        "mean_migrations": 1.07,
+        "mean_no_ops": 98.93,
+        "mean_sla_breaches": 40.87,
+        "mean_overload_steps": 0.87,
+        "mean_final_jains": 0.9331,
+        "mean_unique_vms": 1.07,
+        "mean_unique_destinations": 1.0,
+        "mean_entropy": 1.7638,
+        "mean_latency_ms": 0.78,
+        "reward_breakdown_means": {
+          "fairness": 222.23,
+          "cpu_std": -22.07,
+          "stability": 37.33,
+          "sla": -81.73,
+          "overload": -3.47,
+          "migration": -0.85,
+          "invalid": 0.0
+        }
+      }
+    },
+    "NETWORK_HOTSPOT": {
+      "baseline": {
+        "mean": 138.0,
+        "std": 216.67,
+        "median": 235.99,
+        "min": -271.06,
+        "max": 326.38,
+        "ci_95": [
+          18.0,
+          258.0
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": 138.0,
+        "std_reward": 216.67,
+        "mean_migrations": 10.07,
+        "mean_no_ops": 76.67,
+        "mean_sla_breaches": 15.47,
+        "mean_overload_steps": 0.0,
+        "mean_final_jains": 0.9461,
+        "mean_unique_vms": 3.07,
+        "mean_unique_destinations": 2.87,
+        "reward_breakdown_means": {
+          "fairness": 243.22,
+          "cpu_std": -10.23,
+          "stability": 76.67,
+          "sla": -30.93,
+          "overload": 0.0,
+          "migration": -8.05,
+          "invalid": -132.67
+        }
+      },
+      "random": {
+        "mean": 110.44,
+        "std": 46.84,
+        "median": 124.34,
+        "min": -1.18,
+        "max": 168.37,
+        "ci_95": [
+          84.5,
+          136.38
+        ],
+        "policy": "Random Valid Policy",
+        "episodes": 15,
+        "mean_reward": 110.44,
+        "std_reward": 46.84,
+        "mean_migrations": 76.27,
+        "mean_no_ops": 23.73,
+        "mean_sla_breaches": 15.47,
+        "mean_overload_steps": 2.07,
+        "mean_final_jains": 0.9325,
+        "mean_unique_vms": 6.0,
+        "mean_unique_destinations": 3.0,
+        "reward_breakdown_means": {
+          "fairness": 222.95,
+          "cpu_std": -21.9,
+          "stability": 9.6,
+          "sla": -30.93,
+          "overload": -8.27,
+          "migration": -61.01,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v4": {
+        "mean": -6.23,
+        "std": 176.18,
+        "median": 19.0,
+        "min": -397.15,
+        "max": 222.51,
+        "ci_95": [
+          -103.81,
+          91.34
+        ],
+        "policy": "PPO V4",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -6.23,
+        "std_reward": 176.18,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 15.47,
+        "mean_overload_steps": 33.67,
+        "mean_final_jains": 0.811,
+        "mean_unique_vms": 0.0,
+        "mean_unique_destinations": 0.0,
+        "mean_entropy": 1.6339,
+        "mean_latency_ms": 0.76,
+        "reward_breakdown_means": {
+          "fairness": 193.03,
+          "cpu_std": -36.67,
+          "stability": 3.0,
+          "sla": -30.93,
+          "overload": -134.67,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v5": {
+        "mean": 194.37,
+        "std": 71.28,
+        "median": 217.64,
+        "min": 53.24,
+        "max": 298.12,
+        "ci_95": [
+          154.89,
+          233.85
+        ],
+        "policy": "PPO V5",
+        "model_path": "models/ppo_vmotion_v5_masked.zip",
+        "episodes": 15,
+        "mean_reward": 194.37,
+        "std_reward": 71.28,
+        "mean_migrations": 2.4,
+        "mean_no_ops": 97.6,
+        "mean_sla_breaches": 15.47,
+        "mean_overload_steps": 0.87,
+        "mean_final_jains": 0.9195,
+        "mean_unique_vms": 1.73,
+        "mean_unique_destinations": 1.8,
+        "mean_entropy": 1.8166,
+        "mean_latency_ms": 0.74,
+        "reward_breakdown_means": {
+          "fairness": 220.06,
+          "cpu_std": -23.56,
+          "stability": 34.2,
+          "sla": -30.93,
+          "overload": -3.47,
+          "migration": -1.92,
+          "invalid": 0.0
+        }
+      }
+    },
+    "SLA_CRITICAL": {
+      "baseline": {
+        "mean": -616.48,
+        "std": 413.79,
+        "median": -712.04,
+        "min": -1335.32,
+        "max": -1.3,
+        "ci_95": [
+          -845.65,
+          -387.31
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": -616.48,
+        "std_reward": 413.79,
+        "mean_migrations": 31.2,
+        "mean_no_ops": 26.4,
+        "mean_sla_breaches": 172.07,
+        "mean_overload_steps": 18.33,
+        "mean_final_jains": 0.9629,
+        "mean_unique_vms": 3.8,
+        "mean_unique_destinations": 3.0,
+        "reward_breakdown_means": {
+          "fairness": 241.33,
+          "cpu_std": -16.45,
+          "stability": 26.4,
+          "sla": -344.13,
+          "overload": -74.67,
+          "migration": -24.96,
+          "invalid": -424.0
+        }
+      },
+      "random": {
+        "mean": -427.16,
+        "std": 203.4,
+        "median": -421.78,
+        "min": -891.13,
+        "max": -175.56,
+        "ci_95": [
+          -539.81,
+          -314.51
+        ],
+        "policy": "Random Valid Policy",
+        "episodes": 15,
+        "mean_reward": -427.16,
+        "std_reward": 203.4,
+        "mean_migrations": 75.13,
+        "mean_no_ops": 24.87,
+        "mean_sla_breaches": 172.07,
+        "mean_overload_steps": 47.47,
+        "mean_final_jains": 0.9027,
+        "mean_unique_vms": 6.0,
+        "mean_unique_destinations": 3.0,
+        "reward_breakdown_means": {
+          "fairness": 222.31,
+          "cpu_std": -31.1,
+          "stability": 5.07,
+          "sla": -344.13,
+          "overload": -219.2,
+          "migration": -60.11,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v4": {
+        "mean": -573.2,
+        "std": 223.16,
+        "median": -530.91,
+        "min": -1084.58,
+        "max": -203.17,
+        "ci_95": [
+          -696.8,
+          -449.61
+        ],
+        "policy": "PPO V4",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -573.2,
+        "std_reward": 223.16,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 172.07,
+        "mean_overload_steps": 85.87,
+        "mean_final_jains": 0.8206,
+        "mean_unique_vms": 0.0,
+        "mean_unique_destinations": 0.0,
+        "mean_entropy": 1.6186,
+        "mean_latency_ms": 0.92,
+        "reward_breakdown_means": {
+          "fairness": 199.58,
+          "cpu_std": -46.78,
+          "stability": 0.0,
+          "sla": -344.13,
+          "overload": -381.87,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v5": {
+        "mean": -108.49,
+        "std": 226.34,
+        "median": -25.59,
+        "min": -639.25,
+        "max": 119.71,
+        "ci_95": [
+          -233.84,
+          16.87
+        ],
+        "policy": "PPO V5",
+        "model_path": "models/ppo_vmotion_v5_masked.zip",
+        "episodes": 15,
+        "mean_reward": -108.49,
+        "std_reward": 226.34,
+        "mean_migrations": 2.0,
+        "mean_no_ops": 98.0,
+        "mean_sla_breaches": 172.07,
+        "mean_overload_steps": 13.2,
+        "mean_final_jains": 0.9645,
+        "mean_unique_vms": 1.67,
+        "mean_unique_destinations": 1.67,
+        "mean_entropy": 1.7839,
+        "mean_latency_ms": 0.95,
+        "reward_breakdown_means": {
+          "fairness": 241.71,
+          "cpu_std": -15.99,
+          "stability": 64.33,
+          "sla": -344.13,
+          "overload": -52.8,
+          "migration": -1.6,
+          "invalid": 0.0
+        }
+      }
+    },
+    "MIXED_OVERLOAD": {
+      "baseline": {
+        "mean": -918.55,
+        "std": 228.96,
+        "median": -949.42,
+        "min": -1277.35,
+        "max": -327.37,
+        "ci_95": [
+          -1045.36,
+          -791.74
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": -918.55,
+        "std_reward": 228.96,
+        "mean_migrations": 34.0,
+        "mean_no_ops": 4.93,
+        "mean_sla_breaches": 183.0,
+        "mean_overload_steps": 33.93,
+        "mean_final_jains": 0.9665,
+        "mean_unique_vms": 3.93,
+        "mean_unique_destinations": 3.0,
+        "reward_breakdown_means": {
+          "fairness": 238.66,
+          "cpu_std": -20.94,
+          "stability": 4.93,
+          "sla": -366.0,
+          "overload": -137.33,
+          "migration": -27.2,
+          "invalid": -610.67
+        }
+      },
+      "random": {
+        "mean": -486.42,
+        "std": 223.51,
+        "median": -508.63,
+        "min": -971.63,
+        "max": -137.42,
+        "ci_95": [
+          -610.21,
+          -362.63
+        ],
+        "policy": "Random Valid Policy",
+        "episodes": 15,
+        "mean_reward": -486.42,
+        "std_reward": 223.51,
+        "mean_migrations": 73.67,
+        "mean_no_ops": 26.33,
+        "mean_sla_breaches": 183.0,
+        "mean_overload_steps": 56.27,
+        "mean_final_jains": 0.8772,
+        "mean_unique_vms": 6.0,
+        "mean_unique_destinations": 3.0,
+        "reward_breakdown_means": {
+          "fairness": 224.89,
+          "cpu_std": -31.04,
+          "stability": 4.67,
+          "sla": -366.0,
+          "overload": -260.0,
+          "migration": -58.93,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v4": {
+        "mean": -686.47,
+        "std": 216.26,
+        "median": -688.32,
+        "min": -1108.45,
+        "max": -325.99,
+        "ci_95": [
+          -806.24,
+          -566.69
+        ],
+        "policy": "PPO V4",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -686.47,
+        "std_reward": 216.26,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 183.0,
+        "mean_overload_steps": 99.47,
+        "mean_final_jains": 0.7829,
+        "mean_unique_vms": 0.0,
+        "mean_unique_destinations": 0.0,
+        "mean_entropy": 1.6328,
+        "mean_latency_ms": 0.89,
+        "reward_breakdown_means": {
+          "fairness": 194.53,
+          "cpu_std": -51.26,
+          "stability": 0.0,
+          "sla": -366.0,
+          "overload": -463.73,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v5": {
+        "mean": -176.79,
+        "std": 219.12,
+        "median": -159.31,
+        "min": -619.49,
+        "max": 164.49,
+        "ci_95": [
+          -298.15,
+          -55.44
+        ],
+        "policy": "PPO V5",
+        "model_path": "models/ppo_vmotion_v5_masked.zip",
+        "episodes": 15,
+        "mean_reward": -176.79,
+        "std_reward": 219.12,
+        "mean_migrations": 1.0,
+        "mean_no_ops": 99.0,
+        "mean_sla_breaches": 183.0,
+        "mean_overload_steps": 19.6,
+        "mean_final_jains": 0.9632,
+        "mean_unique_vms": 1.0,
+        "mean_unique_destinations": 1.0,
+        "mean_entropy": 1.7999,
+        "mean_latency_ms": 0.85,
+        "reward_breakdown_means": {
+          "fairness": 241.49,
+          "cpu_std": -18.02,
+          "stability": 44.93,
+          "sla": -366.0,
+          "overload": -78.4,
+          "migration": -0.8,
+          "invalid": 0.0
+        }
+      }
+    },
+    "EXPENSIVE_MIGRATION": {
+      "baseline": {
+        "mean": 79.08,
+        "std": 177.32,
+        "median": 157.01,
+        "min": -332.57,
+        "max": 279.56,
+        "ci_95": [
+          -19.13,
+          177.28
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": 79.08,
+        "std_reward": 177.32,
+        "mean_migrations": 10.07,
+        "mean_no_ops": 77.27,
+        "mean_sla_breaches": 42.8,
+        "mean_overload_steps": 0.93,
+        "mean_final_jains": 0.9676,
+        "mean_unique_vms": 2.93,
+        "mean_unique_destinations": 2.53,
+        "reward_breakdown_means": {
+          "fairness": 243.16,
+          "cpu_std": -10.25,
+          "stability": 77.27,
+          "sla": -85.6,
+          "overload": -3.73,
+          "migration": -15.1,
+          "invalid": -126.67
+        }
+      },
+      "random": {
+        "mean": -16.93,
+        "std": 74.92,
+        "median": 7.49,
+        "min": -205.98,
+        "max": 80.26,
+        "ci_95": [
+          -58.42,
+          24.57
+        ],
+        "policy": "Random Valid Policy",
+        "episodes": 15,
+        "mean_reward": -16.93,
+        "std_reward": 74.92,
+        "mean_migrations": 75.67,
+        "mean_no_ops": 24.33,
+        "mean_sla_breaches": 42.8,
+        "mean_overload_steps": 6.2,
+        "mean_final_jains": 0.9037,
+        "mean_unique_vms": 6.0,
+        "mean_unique_destinations": 3.0,
+        "reward_breakdown_means": {
+          "fairness": 221.54,
+          "cpu_std": -23.23,
+          "stability": 8.67,
+          "sla": -85.6,
+          "overload": -24.8,
+          "migration": -113.5,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v4": {
+        "mean": -85.76,
+        "std": 173.94,
+        "median": -42.91,
+        "min": -423.63,
+        "max": 127.95,
+        "ci_95": [
+          -182.09,
+          10.58
+        ],
+        "policy": "PPO V4",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -85.76,
+        "std_reward": 173.94,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 42.8,
+        "mean_overload_steps": 36.87,
+        "mean_final_jains": 0.7627,
+        "mean_unique_vms": 0.0,
+        "mean_unique_destinations": 0.0,
+        "mean_entropy": 1.6046,
+        "mean_latency_ms": 0.89,
+        "reward_breakdown_means": {
+          "fairness": 187.42,
+          "cpu_std": -40.11,
+          "stability": 0.0,
+          "sla": -85.6,
+          "overload": -147.47,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v5": {
+        "mean": 134.72,
+        "std": 70.25,
+        "median": 131.28,
+        "min": 28.78,
+        "max": 263.39,
+        "ci_95": [
+          95.82,
+          173.63
+        ],
+        "policy": "PPO V5",
+        "model_path": "models/ppo_vmotion_v5_masked.zip",
+        "episodes": 15,
+        "mean_reward": 134.72,
+        "std_reward": 70.25,
+        "mean_migrations": 0.93,
+        "mean_no_ops": 99.07,
+        "mean_sla_breaches": 42.8,
+        "mean_overload_steps": 2.47,
+        "mean_final_jains": 0.9042,
+        "mean_unique_vms": 0.93,
+        "mean_unique_destinations": 0.93,
+        "mean_entropy": 1.7486,
+        "mean_latency_ms": 0.92,
+        "reward_breakdown_means": {
+          "fairness": 224.07,
+          "cpu_std": -22.55,
+          "stability": 30.07,
+          "sla": -85.6,
+          "overload": -9.87,
+          "migration": -1.4,
+          "invalid": 0.0
+        }
+      }
+    },
+    "UNEVEN_CLUSTER": {
+      "baseline": {
+        "mean": 82.5,
+        "std": 192.16,
+        "median": 72.1,
+        "min": -401.1,
+        "max": 312.13,
+        "ci_95": [
+          -23.93,
+          188.92
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": 82.5,
+        "std_reward": 192.16,
+        "mean_migrations": 10.33,
+        "mean_no_ops": 77.67,
+        "mean_sla_breaches": 43.53,
+        "mean_overload_steps": 3.13,
+        "mean_final_jains": 0.9649,
+        "mean_unique_vms": 4.67,
+        "mean_unique_destinations": 2.67,
+        "reward_breakdown_means": {
+          "fairness": 243.13,
+          "cpu_std": -10.44,
+          "stability": 77.67,
+          "sla": -87.07,
+          "overload": -12.53,
+          "migration": -8.27,
+          "invalid": -120.0
+        }
+      },
+      "random": {
+        "mean": 22.82,
+        "std": 97.52,
+        "median": 36.72,
+        "min": -169.85,
+        "max": 126.33,
+        "ci_95": [
+          -31.19,
+          76.83
+        ],
+        "policy": "Random Valid Policy",
+        "episodes": 15,
+        "mean_reward": 22.82,
+        "std_reward": 97.52,
+        "mean_migrations": 75.07,
+        "mean_no_ops": 24.93,
+        "mean_sla_breaches": 43.53,
+        "mean_overload_steps": 8.53,
+        "mean_final_jains": 0.9339,
+        "mean_unique_vms": 6.0,
+        "mean_unique_destinations": 3.0,
+        "reward_breakdown_means": {
+          "fairness": 221.16,
+          "cpu_std": -24.82,
+          "stability": 8.53,
+          "sla": -87.07,
+          "overload": -34.93,
+          "migration": -60.05,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v4": {
+        "mean": -418.53,
+        "std": 78.96,
+        "median": -402.59,
+        "min": -564.62,
+        "max": -282.36,
+        "ci_95": [
+          -462.26,
+          -374.8
+        ],
+        "policy": "PPO V4",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -418.53,
+        "std_reward": 78.96,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 43.53,
+        "mean_overload_steps": 98.47,
+        "mean_final_jains": 0.5198,
+        "mean_unique_vms": 0.0,
+        "mean_unique_destinations": 0.0,
+        "mean_entropy": 1.7521,
+        "mean_latency_ms": 0.94,
+        "reward_breakdown_means": {
+          "fairness": 124.64,
+          "cpu_std": -62.24,
+          "stability": 0.0,
+          "sla": -87.07,
+          "overload": -393.87,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v5": {
+        "mean": 22.67,
+        "std": 149.25,
+        "median": 54.27,
+        "min": -387.35,
+        "max": 216.07,
+        "ci_95": [
+          -59.99,
+          105.33
+        ],
+        "policy": "PPO V5",
+        "model_path": "models/ppo_vmotion_v5_masked.zip",
+        "episodes": 15,
+        "mean_reward": 22.67,
+        "std_reward": 149.25,
+        "mean_migrations": 7.33,
+        "mean_no_ops": 92.67,
+        "mean_sla_breaches": 43.53,
+        "mean_overload_steps": 22.53,
+        "mean_final_jains": 0.9014,
+        "mean_unique_vms": 2.33,
+        "mean_unique_destinations": 2.0,
+        "mean_entropy": 1.738,
+        "mean_latency_ms": 0.86,
+        "reward_breakdown_means": {
+          "fairness": 214.45,
+          "cpu_std": -28.84,
+          "stability": 20.13,
+          "sla": -87.07,
+          "overload": -90.13,
+          "migration": -5.87,
+          "invalid": 0.0
+        }
+      }
+    },
+    "RAPID_LOAD_CHANGE": {
+      "baseline": {
+        "mean": -157.03,
+        "std": 208.87,
+        "median": -178.21,
+        "min": -537.14,
+        "max": 105.15,
+        "ci_95": [
+          -272.71,
+          -41.34
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": -157.03,
+        "std_reward": 208.87,
+        "mean_migrations": 20.53,
+        "mean_no_ops": 52.93,
+        "mean_sla_breaches": 68.27,
+        "mean_overload_steps": 3.73,
+        "mean_final_jains": 0.925,
+        "mean_unique_vms": 4.53,
+        "mean_unique_destinations": 3.0,
+        "reward_breakdown_means": {
+          "fairness": 237.93,
+          "cpu_std": -14.2,
+          "stability": 52.47,
+          "sla": -136.53,
+          "overload": -14.93,
+          "migration": -16.43,
+          "invalid": -265.33
+        }
+      },
+      "random": {
+        "mean": -36.45,
+        "std": 92.75,
+        "median": -29.06,
+        "min": -160.83,
+        "max": 123.65,
+        "ci_95": [
+          -87.82,
+          14.92
+        ],
+        "policy": "Random Valid Policy",
+        "episodes": 15,
+        "mean_reward": -36.45,
+        "std_reward": 92.75,
+        "mean_migrations": 75.33,
+        "mean_no_ops": 24.67,
+        "mean_sla_breaches": 68.27,
+        "mean_overload_steps": 9.53,
+        "mean_final_jains": 0.8205,
+        "mean_unique_vms": 6.0,
+        "mean_unique_destinations": 3.0,
+        "reward_breakdown_means": {
+          "fairness": 218.74,
+          "cpu_std": -25.65,
+          "stability": 7.53,
+          "sla": -136.53,
+          "overload": -40.27,
+          "migration": -60.27,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v4": {
+        "mean": -69.0,
+        "std": 131.32,
+        "median": -33.78,
+        "min": -403.4,
+        "max": 114.9,
+        "ci_95": [
+          -141.73,
+          3.73
+        ],
+        "policy": "PPO V4",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -69.0,
+        "std_reward": 131.32,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 68.27,
+        "mean_overload_steps": 28.2,
+        "mean_final_jains": 0.8645,
+        "mean_unique_vms": 0.0,
+        "mean_unique_destinations": 0.0,
+        "mean_entropy": 1.5671,
+        "mean_latency_ms": 0.9,
+        "reward_breakdown_means": {
+          "fairness": 202.74,
+          "cpu_std": -33.67,
+          "stability": 11.53,
+          "sla": -136.53,
+          "overload": -113.07,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v5": {
+        "mean": 80.14,
+        "std": 84.55,
+        "median": 93.76,
+        "min": -67.85,
+        "max": 258.01,
+        "ci_95": [
+          33.32,
+          126.97
+        ],
+        "policy": "PPO V5",
+        "model_path": "models/ppo_vmotion_v5_masked.zip",
+        "episodes": 15,
+        "mean_reward": 80.14,
+        "std_reward": 84.55,
+        "mean_migrations": 2.07,
+        "mean_no_ops": 97.93,
+        "mean_sla_breaches": 68.27,
+        "mean_overload_steps": 5.0,
+        "mean_final_jains": 0.9208,
+        "mean_unique_vms": 1.6,
+        "mean_unique_destinations": 1.6,
+        "mean_entropy": 1.7408,
+        "mean_latency_ms": 0.86,
+        "reward_breakdown_means": {
+          "fairness": 225.61,
+          "cpu_std": -22.14,
+          "stability": 35.13,
+          "sla": -136.53,
+          "overload": -20.27,
+          "migration": -1.65,
+          "invalid": 0.0
+        }
+      }
+    },
+    "MIGRATION_COOLDOWN_PRESSURE": {
+      "baseline": {
+        "mean": 129.02,
+        "std": 143.68,
+        "median": 149.27,
+        "min": -139.15,
+        "max": 337.3,
+        "ci_95": [
+          49.44,
+          208.6
+        ],
+        "policy": "Baseline Heuristic",
+        "episodes": 15,
+        "mean_reward": 129.02,
+        "std_reward": 143.68,
+        "mean_migrations": 5.53,
+        "mean_no_ops": 84.6,
+        "mean_sla_breaches": 44.4,
+        "mean_overload_steps": 0.0,
+        "mean_final_jains": 0.9828,
+        "mean_unique_vms": 2.8,
+        "mean_unique_destinations": 2.47,
+        "reward_breakdown_means": {
+          "fairness": 244.96,
+          "cpu_std": -8.65,
+          "stability": 84.6,
+          "sla": -88.8,
+          "overload": 0.0,
+          "migration": -4.43,
+          "invalid": -98.67
+        }
+      },
+      "random": {
+        "mean": 66.32,
+        "std": 87.18,
+        "median": 91.7,
+        "min": -105.11,
+        "max": 165.17,
+        "ci_95": [
+          18.04,
+          114.6
+        ],
+        "policy": "Random Valid Policy",
+        "episodes": 15,
+        "mean_reward": 66.32,
+        "std_reward": 87.18,
+        "mean_migrations": 56.0,
+        "mean_no_ops": 44.0,
+        "mean_sla_breaches": 44.4,
+        "mean_overload_steps": 3.13,
+        "mean_final_jains": 0.8936,
+        "mean_unique_vms": 6.0,
+        "mean_unique_destinations": 3.0,
+        "reward_breakdown_means": {
+          "fairness": 220.34,
+          "cpu_std": -23.75,
+          "stability": 15.87,
+          "sla": -88.8,
+          "overload": -12.53,
+          "migration": -44.8,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v4": {
+        "mean": -67.48,
+        "std": 206.6,
+        "median": 14.89,
+        "min": -469.01,
+        "max": 175.75,
+        "ci_95": [
+          -181.91,
+          46.94
+        ],
+        "policy": "PPO V4",
+        "model_path": "models/ppo_vmotion_v4_masked.zip",
+        "episodes": 15,
+        "mean_reward": -67.48,
+        "std_reward": 206.6,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_sla_breaches": 44.4,
+        "mean_overload_steps": 32.27,
+        "mean_final_jains": 0.774,
+        "mean_unique_vms": 0.0,
+        "mean_unique_destinations": 0.0,
+        "mean_entropy": 1.5942,
+        "mean_latency_ms": 0.88,
+        "reward_breakdown_means": {
+          "fairness": 189.44,
+          "cpu_std": -39.05,
+          "stability": 0.0,
+          "sla": -88.8,
+          "overload": -129.07,
+          "migration": 0.0,
+          "invalid": 0.0
+        }
+      },
+      "ppo_v5": {
+        "mean": 135.7,
+        "std": 73.74,
+        "median": 142.64,
+        "min": -5.47,
+        "max": 276.97,
+        "ci_95": [
+          94.86,
+          176.54
+        ],
+        "policy": "PPO V5",
+        "model_path": "models/ppo_vmotion_v5_masked.zip",
+        "episodes": 15,
+        "mean_reward": 135.7,
+        "std_reward": 73.74,
+        "mean_migrations": 1.47,
+        "mean_no_ops": 98.53,
+        "mean_sla_breaches": 44.4,
+        "mean_overload_steps": 1.27,
+        "mean_final_jains": 0.9126,
+        "mean_unique_vms": 1.4,
+        "mean_unique_destinations": 1.4,
+        "mean_entropy": 1.7557,
+        "mean_latency_ms": 0.91,
+        "reward_breakdown_means": {
+          "fairness": 219.69,
+          "cpu_std": -23.68,
+          "stability": 34.73,
+          "sla": -88.8,
+          "overload": -5.07,
+          "migration": -1.17,
+          "invalid": 0.0
+        }
+      }
+    }
+  },
+  "split_aggregates": {
+    "TRAIN": {
+      "baseline": {
+        "mean": -220.13,
+        "std": 496.17,
+        "median": -74.31,
+        "min": -918.55,
+        "max": 186.63,
+        "ci_95": [
+          -1009.54,
+          569.27
+        ],
+        "mean_reward": -220.13,
+        "std_reward": 496.17,
+        "mean_migrations": 15.03,
+        "mean_no_ops": 59.72,
+        "mean_overload_steps": 10.18,
+        "mean_final_jains": 0.9651
+      },
+      "random": {
+        "mean": -152.9,
+        "std": 240.0,
+        "median": -73.8,
+        "min": -486.42,
+        "max": 22.43,
+        "ci_95": [
+          -534.73,
+          228.94
+        ],
+        "mean_reward": -152.9,
+        "std_reward": 240.0,
+        "mean_migrations": 74.42,
+        "mean_no_ops": 25.58,
+        "mean_overload_steps": 23.1,
+        "mean_final_jains": 0.8894
+      },
+      "ppo_v4": {
+        "mean": -353.64,
+        "std": 287.64,
+        "median": -321.05,
+        "min": -686.47,
+        "max": -85.99,
+        "ci_95": [
+          -811.28,
+          104.0
+        ],
+        "mean_reward": -353.64,
+        "std_reward": 287.64,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_overload_steps": 71.72,
+        "mean_final_jains": 0.7823,
+        "mean_entropy": 1.6199
+      },
+      "ppo_v5": {
+        "mean": 24.75,
+        "std": 161.51,
+        "median": 58.34,
+        "min": -176.79,
+        "max": 159.1,
+        "ci_95": [
+          -232.22,
+          281.72
+        ],
+        "mean_reward": 24.75,
+        "std_reward": 161.51,
+        "mean_migrations": 1.14,
+        "mean_no_ops": 98.87,
+        "mean_overload_steps": 7.0,
+        "mean_final_jains": 0.9413,
+        "mean_entropy": 1.7759
+      }
+    },
+    "VALIDATION": {
+      "baseline": {
+        "mean": -230.34,
+        "std": 355.21,
+        "median": -157.03,
+        "min": -616.48,
+        "max": 82.5,
+        "ci_95": [
+          -1112.8,
+          652.12
+        ],
+        "mean_reward": -230.34,
+        "std_reward": 355.21,
+        "mean_migrations": 20.69,
+        "mean_no_ops": 52.33,
+        "mean_overload_steps": 8.4,
+        "mean_final_jains": 0.9509
+      },
+      "random": {
+        "mean": -146.93,
+        "std": 244.49,
+        "median": -36.45,
+        "min": -427.16,
+        "max": 22.82,
+        "ci_95": [
+          -754.32,
+          460.46
+        ],
+        "mean_reward": -146.93,
+        "std_reward": 244.49,
+        "mean_migrations": 75.18,
+        "mean_no_ops": 24.82,
+        "mean_overload_steps": 21.84,
+        "mean_final_jains": 0.8857
+      },
+      "ppo_v4": {
+        "mean": -353.58,
+        "std": 258.3,
+        "median": -418.53,
+        "min": -573.2,
+        "max": -69.0,
+        "ci_95": [
+          -995.28,
+          288.13
+        ],
+        "mean_reward": -353.58,
+        "std_reward": 258.3,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_overload_steps": 70.85,
+        "mean_final_jains": 0.735,
+        "mean_entropy": 1.6459
+      },
+      "ppo_v5": {
+        "mean": -1.89,
+        "std": 96.68,
+        "median": 22.67,
+        "min": -108.49,
+        "max": 80.14,
+        "ci_95": [
+          -242.09,
+          238.3
+        ],
+        "mean_reward": -1.89,
+        "std_reward": 96.68,
+        "mean_migrations": 3.8,
+        "mean_no_ops": 96.2,
+        "mean_overload_steps": 13.58,
+        "mean_final_jains": 0.9289,
+        "mean_entropy": 1.7542
+      }
+    },
+    "TEST": {
+      "baseline": {
+        "mean": 115.37,
+        "std": 31.74,
+        "median": 129.02,
+        "min": 79.08,
+        "max": 138.0,
+        "ci_95": [
+          36.5,
+          194.23
+        ],
+        "mean_reward": 115.37,
+        "std_reward": 31.74,
+        "mean_migrations": 8.56,
+        "mean_no_ops": 79.51,
+        "mean_overload_steps": 0.31,
+        "mean_final_jains": 0.9655
+      },
+      "random": {
+        "mean": 53.28,
+        "std": 64.68,
+        "median": 66.32,
+        "min": -16.93,
+        "max": 110.44,
+        "ci_95": [
+          -107.41,
+          213.96
+        ],
+        "mean_reward": 53.28,
+        "std_reward": 64.68,
+        "mean_migrations": 69.31,
+        "mean_no_ops": 30.69,
+        "mean_overload_steps": 3.8,
+        "mean_final_jains": 0.9099
+      },
+      "ppo_v4": {
+        "mean": -53.16,
+        "std": 41.65,
+        "median": -67.48,
+        "min": -85.76,
+        "max": -6.23,
+        "ci_95": [
+          -156.64,
+          50.33
+        ],
+        "mean_reward": -53.16,
+        "std_reward": 41.65,
+        "mean_migrations": 0.0,
+        "mean_no_ops": 100.0,
+        "mean_overload_steps": 34.27,
+        "mean_final_jains": 0.7826,
+        "mean_entropy": 1.6109
+      },
+      "ppo_v5": {
+        "mean": 154.93,
+        "std": 34.16,
+        "median": 135.7,
+        "min": 134.72,
+        "max": 194.37,
+        "ci_95": [
+          70.07,
+          239.79
+        ],
+        "mean_reward": 154.93,
+        "std_reward": 34.16,
+        "mean_migrations": 1.6,
+        "mean_no_ops": 98.4,
+        "mean_overload_steps": 1.54,
+        "mean_final_jains": 0.9121,
+        "mean_entropy": 1.7736
+      }
+    }
+  },
+  "overall": {
+    "baseline": {
+      "mean": -122.54,
+      "std": 370.54,
+      "median": 75.51,
+      "min": -918.55,
+      "max": 186.63,
+      "ci_95": [
+        -387.59,
+        142.5
+      ],
+      "mean_reward": -122.54,
+      "std_reward": 370.54,
+      "mean_migrations": 14.79,
+      "mean_no_ops": 63.44,
+      "mean_overload_steps": 6.68,
+      "mean_final_jains": 0.961,
+      "reward_breakdown_means": {
+        "fairness": 241.63,
+        "cpu_std": -12.83,
+        "stability": 60.61,
+        "sla": -154.64,
+        "overload": -27.04,
+        "migration": -12.54
+      }
+    },
+    "random": {
+      "mean": -89.25,
+      "std": 207.59,
+      "median": 2.47,
+      "min": -486.42,
+      "max": 110.44,
+      "ci_95": [
+        -237.74,
+        59.24
+      ],
+      "mean_reward": -89.25,
+      "std_reward": 207.59,
+      "mean_migrations": 73.11,
+      "mean_no_ops": 26.89,
+      "mean_overload_steps": 16.93,
+      "mean_final_jains": 0.8944,
+      "reward_breakdown_means": {
+        "fairness": 221.28,
+        "cpu_std": -25.87,
+        "stability": 8.48,
+        "sla": -154.64,
+        "overload": -74.72,
+        "migration": -63.79
+      }
+    },
+    "ppo_v4": {
+      "mean": -263.48,
+      "std": 252.7,
+      "median": -114.3,
+      "min": -686.47,
+      "max": -6.23,
+      "ci_95": [
+        -444.23,
+        -82.72
+      ],
+      "mean_reward": -263.48,
+      "std_reward": 252.7,
+      "mean_migrations": 0.0,
+      "mean_no_ops": 100.0,
+      "mean_overload_steps": 60.22,
+      "mean_final_jains": 0.7682,
+      "mean_entropy": 1.625,
+      "reward_breakdown_means": {
+        "fairness": 184.53,
+        "cpu_std": -44.0,
+        "stability": 1.97,
+        "sla": -154.64,
+        "overload": -251.34,
+        "migration": 0.0
+      }
+    },
+    "ppo_v5": {
+      "mean": 55.81,
+      "std": 125.88,
+      "median": 107.43,
+      "min": -176.79,
+      "max": 194.37,
+      "ci_95": [
+        -34.23,
+        145.85
+      ],
+      "mean_reward": 55.81,
+      "std_reward": 125.88,
+      "mean_migrations": 2.07,
+      "mean_no_ops": 97.93,
+      "mean_overload_steps": 7.33,
+      "mean_final_jains": 0.9288,
+      "mean_entropy": 1.7687,
+      "reward_breakdown_means": {
+        "fairness": 226.81,
+        "cpu_std": -22.05,
+        "stability": 36.78,
+        "sla": -154.64,
+        "overload": -29.36,
+        "migration": -1.72
+      }
+    }
+  }
+}
