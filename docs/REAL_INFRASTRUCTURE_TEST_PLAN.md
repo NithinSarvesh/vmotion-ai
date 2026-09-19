@@ -39,12 +39,13 @@ To validate VMotion AI on real hardware or cloud-nested hypervisors, the physica
 ### Hardware & Virtualization Requirements
 1. **Real Node A (Source Hypervisor)**:
    - Minimum 4 physical/virtual CPU cores, 8 GB RAM, 50 GB storage.
-   - Running genuine Linux KVM hypervisor (Proxmox VE 8.x recommended).
+   - Running Proxmox VE 9.x/current supported release (currently 9.2), x86_64, with hardware virtualization enabled.
    - Network connectivity to Node B and the Windows control machine.
 2. **Real Node B (Target Hypervisor)**:
    - Minimum 4 physical/virtual CPU cores, 8 GB RAM, 50 GB storage.
    - Symmetrical hypervisor configuration in cluster with Node A.
    - Unallocated memory headroom of at least VM RAM footprint $+ 20\%$.
+   - **Cluster Quorum & Resilience**: A 2-node cluster operates with both nodes online but loses majority quorum ($1/2 = 50\%$) if one node fails or disconnects. For single-node failure resilience in a 2-node test lab, an external QDevice (`corosync-qnetd`) can be configured to provide a tie-breaker 3rd vote. A 2-node cluster without a QDevice is strictly for testing and must not be described as equivalent to a production 3+ node fault-tolerant HA architecture.
 3. **Real Workload (Test VM)**:
    - Running lightweight Linux distribution (Alpine Linux or Debian 12 Minimal).
    - 1–2 vCPUs, 1024–2048 MB RAM, 10 GB disk.
@@ -53,7 +54,7 @@ To validate VMotion AI on real hardware or cloud-nested hypervisors, the physica
    - Node-to-node latency $< 5\text{ ms}$, MTU 1500 (or 9000 jumbo frames if supported).
    - Unfiltered TCP traffic between nodes on migration stream ports (TCP 60000–60050 for Proxmox; TCP 49152–49215 for Libvirt).
 5. **Storage Mechanism**:
-   - Either shared datastore (NFSv4 mount on both nodes at identical paths) OR online local disk migration capability (`with-local-disks=1` via QEMU NBD).
+   - Supported: Either shared datastore (NFSv4 / Ceph mount on both nodes at identical paths) OR online local disk migration (`with-local-disks=1` via QEMU NBD mirroring). Neither is an absolute architectural requirement.
 
 ---
 
@@ -71,17 +72,17 @@ $$\text{Windows Workstation} \xrightarrow{\text{HTTPS REST (Port 8006)}} \text{H
 ## 3. Security Specification
 
 1. **Credential Handling**:
-   - Authenticates via scoped API tokens (e.g., `PVEAPIToken=vmotion@pve!automation=secret`).
-   - Tokens require only the minimum privileges: `VM.Migrate`, `VM.Audit`, `VM.Monitor`, `Sys.Audit`.
+   - Authenticates via scoped API tokens (e.g., `PVEAPIToken=vmotion-api@pve!automation=secret`).
+   - Tokens require only the verified privileges derived from implemented API calls: `VM.Migrate`, `VM.Audit`, `VM.GuestAgent.Audit`, `Datastore.Audit`, `Datastore.AllocateSpace`, `Sys.Audit`. (`VM.Allocate` is excluded from the baseline set as the implemented migration endpoint does not call a VM allocation API; verify with `pveum user token permissions` whether Proxmox internally requires it.) (Note: `VM.Monitor` is not a valid PVE 9 privilege and has been removed.)
    - No root password or SSH private keys stored or transmitted by VMotion AI.
 2. **Secret Masking & Frontend Decoupling**:
    - Hypervisor credentials and API token secrets are stored securely on the backend (`.env` or encrypted settings store).
    - When the frontend queries cluster configuration via `GET /api/cluster/config`, the backend strictly masks secrets (`••••••••`).
    - The browser client NEVER receives plaintext hypervisor API keys.
 3. **Network Boundary & Port Matrix**:
-   - Control Plane to Hypervisor: TCP 8006 (HTTPS, TLS 1.3).
-   - Node A to Node B: TCP 60000–60050 (Live migration data stream, encrypted via TLS).
-   - Cluster Quorum / Corosync: UDP 5404–5405.
+   - Control Plane to Hypervisor: TCP 8006 (HTTPS REST API).
+   - Node A to Node B: TCP 60000–60050 (QEMU live migration data stream; encryption subject to cluster configuration).
+   - Cluster Quorum / Corosync: UDP 5405–5412.
 
 ---
 
@@ -100,7 +101,18 @@ To guarantee seamless transition from simulation to real infrastructure, the bac
 
 ---
 
-## 5. Real Migration Success Contract
+## 5. Real Migration Success Contract & Project Truthfulness
+
+> [!IMPORTANT]
+> **Empirical Verification Status**:
+> All live hypervisor capabilities remain strictly **UNVERIFIED on real hardware**:
+> - Real Proxmox hardware connectivity: **UNVERIFIED**
+> - Real telemetry stream: **UNVERIFIED**
+> - Real VM migration: **UNVERIFIED**
+> - Real UPID execution: **UNVERIFIED**
+> - Real placement verification: **UNVERIFIED**
+> - Real guest-agent verification: **UNVERIFIED**
+> The system does not claim "production-grade", "guaranteed", "zero-downtime", or "optimal" performance.
 
 Before VMotion AI can transition any real migration proposal to `VERIFIED`, all three of the following independent assertions must be satisfied:
 
@@ -114,8 +126,8 @@ $$\text{MIGRATION VERIFIED} \iff (\text{Task Completed}) \land (\text{Placement 
    - Asserts: `vm.node_id == expected_destination_node`.
    - Asserts: `vm.node_id != source_node`.
 3. **Guest Workload Health Verification**:
-   - The control plane issues a guest agent responsiveness query (`qemu-guest-agent ping`).
-   - Asserts: Guest kernel responds within 5.0 seconds and reports status `running`.
+   - The control plane issues a guest agent responsiveness query (`qemu-guest-agent ping` or status check).
+   - Asserts: Guest kernel responds and reports status `running`.
    - Asserts: Workload IP address remains responsive on the virtual network.
 
 If any check fails, the task transitions to `FAILED` and raises an alert in the audit ledger.
