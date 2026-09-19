@@ -6,10 +6,7 @@ import {
   Check,
   Activity,
   Server,
-  ShieldCheck,
-  RefreshCw,
-  Clock,
-  Cpu
+  RefreshCw
 } from 'lucide-react';
 import type { ClusterState, ProviderConnectionResult, ClusterConfig } from '../types';
 
@@ -36,8 +33,8 @@ export const ModeSettingsModal: React.FC<ModeSettingsModalProps> = ({
 
   // Configuration form state
   const [proxmoxEndpoint, setProxmoxEndpoint] = useState<string>('https://192.168.1.100:8006/api2/json');
-  const [proxmoxUser, setProxmoxUser] = useState<string>('root@pam');
-  const [proxmoxTokenId, setProxmoxTokenId] = useState<string>('vmotion');
+  const [proxmoxUser, setProxmoxUser] = useState<string>('vmotion-api@pve');
+  const [proxmoxTokenId, setProxmoxTokenId] = useState<string>('automation');
   const [proxmoxTokenSecret, setProxmoxTokenSecret] = useState<string>('');
   const [tokenConfiguredOnServer, setTokenConfiguredOnServer] = useState<boolean>(false);
   const [proxmoxVerifySsl, setProxmoxVerifySsl] = useState<boolean>(false);
@@ -57,8 +54,8 @@ export const ModeSettingsModal: React.FC<ModeSettingsModalProps> = ({
           if (data.provider_type) setSelectedProvider(data.provider_type);
           if (data.proxmox) {
             setProxmoxEndpoint(data.proxmox.endpoint || 'https://192.168.1.100:8006/api2/json');
-            setProxmoxUser(data.proxmox.user || 'root@pam');
-            setProxmoxTokenId(data.proxmox.token_id || 'vmotion');
+            setProxmoxUser(data.proxmox.user || 'vmotion-api@pve');
+            setProxmoxTokenId(data.proxmox.token_id || 'automation');
             setTokenConfiguredOnServer(data.proxmox.token_secret_configured);
             setProxmoxVerifySsl(data.proxmox.verify_ssl ?? false);
           }
@@ -98,32 +95,39 @@ export const ModeSettingsModal: React.FC<ModeSettingsModalProps> = ({
         body: JSON.stringify(payload)
       });
 
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: Failed to execute diagnostic`);
+      if (res.ok) {
+        const data = await res.json();
+        setTestResult(data);
+      } else {
+        const err = await res.json();
+        setTestResult({
+          provider: selectedProvider,
+          status: 'DISCONNECTED',
+          message: err.detail || 'Connection diagnostic request failed.',
+          node_count: 0,
+          vm_count: 0
+        });
       }
-
-      const data: ProviderConnectionResult = await res.json();
-      setTestResult(data);
-    } catch (err: any) {
+    } catch (e: any) {
       setTestResult({
         provider: selectedProvider,
         status: 'DISCONNECTED',
+        message: `Network error reaching control plane API: ${e.message}`,
         node_count: 0,
-        vm_count: 0,
-        message: err.message || 'Diagnostic communication failure'
+        vm_count: 0
       });
     } finally {
       setTestingConnection(false);
     }
   };
 
-  const handleSaveAndApply = async () => {
+  const handleSaveAndSwitch = async () => {
     setLoading(true);
     try {
+      // 1. Save config
       const configPayload: Record<string, any> = {
         provider_type: selectedProvider
       };
-
       if (selectedProvider === 'proxmox') {
         configPayload.proxmox_endpoint = proxmoxEndpoint;
         configPayload.proxmox_user = proxmoxUser;
@@ -136,484 +140,374 @@ export const ModeSettingsModal: React.FC<ModeSettingsModalProps> = ({
         configPayload.libvirt_uri = libvirtUri;
       }
 
-      // Save parameters
-      const saveRes = await fetch('/api/cluster/config', {
+      await fetch('/api/cluster/config', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Operator-Key': 'vmotion-operator-key-default'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(configPayload)
       });
-      if (!saveRes.ok) {
-        const errData = await saveRes.json().catch(() => ({}));
-        throw new Error(errData.detail || `HTTP ${saveRes.status}`);
-      }
 
-      // Switch provider mode
+      // 2. Switch provider via parent handler
       await onSwitchProvider(selectedProvider);
-      setLoading(false);
       onClose();
-    } catch (err: any) {
-      alert(`Failed to save settings: ${err.message}`);
+    } catch (e) {
+      console.error('Failed to switch provider:', e);
+    } finally {
       setLoading(false);
-    }
-  };
-
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'CONNECTED':
-        return (
-          <span className="inline-flex items-center space-x-1.5 rounded bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-400 border border-emerald-500/30">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span>CONNECTED</span>
-          </span>
-        );
-      case 'AUTHENTICATION_ERROR':
-        return (
-          <span className="inline-flex items-center space-x-1.5 rounded bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-400 border border-rose-500/30">
-            <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
-            <span>AUTHENTICATION ERROR</span>
-          </span>
-        );
-      case 'DISCONNECTED':
-        return (
-          <span className="inline-flex items-center space-x-1.5 rounded bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-400 border border-amber-500/30">
-            <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-            <span>DISCONNECTED</span>
-          </span>
-        );
-      case 'UNAVAILABLE':
-      default:
-        return (
-          <span className="inline-flex items-center space-x-1.5 rounded bg-[#2A303F] px-2.5 py-1 text-xs font-semibold text-slate-300 border border-[#3D465C]">
-            <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
-            <span>UNAVAILABLE</span>
-          </span>
-        );
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4 font-mono text-xs overflow-y-auto">
-      <div className="relative w-full max-w-2xl rounded-lg border border-[#2A303F] bg-[#0E1015] p-6 shadow-2xl my-8">
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-[#1C202A] pb-4 mb-5">
-          <div className="flex items-center space-x-2.5">
-            <div className="rounded p-1.5 bg-blue-500/10 border border-blue-500/30 text-blue-400">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 overflow-y-auto">
+      <div className="relative w-full max-w-2xl rounded-2xl border border-[#CBD5E1] bg-white p-6 sm:p-8 shadow-2xl font-mono text-xs my-8">
+        
+        {/* Modal Header */}
+        <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-5 mb-6">
+          <div className="flex items-center space-x-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50 text-blue-600 border border-blue-200">
               <Layers className="h-4 w-4" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-                Virtualization Infrastructure & Provider Manager
+              <h3 className="text-base font-bold text-[#0F172A] uppercase tracking-wide">
+                INFRASTRUCTURE ENVIRONMENT SELECTOR
               </h3>
-              <p className="text-[11px] text-[#6B7280]">
-                Unified Provider Abstraction • Simulation & Live Hypervisors
-              </p>
+              <span className="text-[11px] text-[#64748B]">
+                Configure hypervisor drivers, API token credentials, and runtime topology
+              </span>
             </div>
           </div>
+
           <button
             onClick={onClose}
-            className="rounded p-1 text-[#6B7280] hover:text-white hover:bg-[#14171E] cursor-pointer transition-colors"
+            className="rounded-lg p-1.5 text-[#64748B] hover:bg-[#F1F5F9] hover:text-[#0F172A] transition-colors"
           >
-            <X className="h-4 w-4" />
+            <X className="h-5 w-5" />
           </button>
         </div>
 
-        {/* Modal Navigation Tabs */}
-        <div className="flex border-b border-[#1C202A] mb-5 font-mono text-xs">
+        {/* Modal Nav Tabs */}
+        <div className="flex space-x-2 border-b border-[#E2E8F0] pb-4 mb-6">
           <button
             onClick={() => setModalTab('config')}
-            className={`pb-2.5 px-4 font-semibold uppercase tracking-wider transition-colors cursor-pointer border-b-2 ${
+            className={`px-3.5 py-1.5 rounded-lg transition-all cursor-pointer font-bold ${
               modalTab === 'config'
-                ? 'border-blue-500 text-white'
-                : 'border-transparent text-[#6B7280] hover:text-[#9CA3AF]'
+                ? 'bg-[#0F172A] text-white shadow-2xs'
+                : 'bg-[#F1F5F9] text-[#475569] hover:bg-[#E2E8F0]'
             }`}
           >
-            PROVIDER CONFIGURATION
+            01 CONFIGURATION & CREDENTIALS
           </button>
           <button
             onClick={() => setModalTab('matrix')}
-            className={`pb-2.5 px-4 font-semibold uppercase tracking-wider transition-colors cursor-pointer border-b-2 flex items-center space-x-1.5 ${
+            className={`px-3.5 py-1.5 rounded-lg transition-all cursor-pointer font-bold ${
               modalTab === 'matrix'
-                ? 'border-blue-500 text-white'
-                : 'border-transparent text-[#6B7280] hover:text-[#9CA3AF]'
+                ? 'bg-[#0F172A] text-white shadow-2xs'
+                : 'bg-[#F1F5F9] text-[#475569] hover:bg-[#E2E8F0]'
             }`}
           >
-            <span>VERIFICATION MATRIX</span>
-            <span className="rounded bg-emerald-500/10 text-emerald-400 text-[10px] px-1.5 py-0.5 border border-emerald-500/30">
-              ZERO FALSE CLAIMS
-            </span>
+            02 CAPABILITY & READINESS MATRIX
           </button>
         </div>
 
         {modalTab === 'config' ? (
-          <>
-        {/* Provider Selector Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
-          {/* Card 1: Simulation */}
-          <div
-            onClick={() => {
-              setSelectedProvider('simulation');
-              setTestResult(null);
-            }}
-            className={`rounded-md border p-3.5 cursor-pointer transition-all ${
-              selectedProvider === 'simulation'
-                ? 'border-blue-500 bg-[#14171E] shadow-sm ring-1 ring-blue-500/30'
-                : 'border-[#1C202A] bg-[#0A0C10] hover:border-[#2A303F]'
-            }`}
-          >
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="font-bold text-white text-xs">SIMULATION</span>
-              {selectedProvider === 'simulation' && <Check className="h-3.5 w-3.5 text-blue-400" />}
-            </div>
-            <p className="text-[10px] text-[#9CA3AF] leading-relaxed">
-              In-memory cluster with 3 nodes, 6 workloads, load drift, and migration physics.
-            </p>
-          </div>
+          <div className="space-y-6">
+            
+            {/* Provider Selection Cards */}
+            <div>
+              <label className="block text-[11px] font-bold text-[#475569] uppercase mb-2.5">
+                SELECT VIRTUALIZATION PROVIDER:
+              </label>
 
-          {/* Card 2: Proxmox VE */}
-          <div
-            onClick={() => {
-              setSelectedProvider('proxmox');
-              setTestResult(null);
-            }}
-            className={`rounded-md border p-3.5 cursor-pointer transition-all ${
-              selectedProvider === 'proxmox'
-                ? 'border-blue-500 bg-[#14171E] shadow-sm ring-1 ring-blue-500/30'
-                : 'border-[#1C202A] bg-[#0A0C10] hover:border-[#2A303F]'
-            }`}
-          >
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="font-bold text-white text-xs">PROXMOX VE</span>
-              {selectedProvider === 'proxmox' && <Check className="h-3.5 w-3.5 text-blue-400" />}
-            </div>
-            <p className="text-[10px] text-[#9CA3AF] leading-relaxed">
-              Live Proxmox cluster via REST API v2 tokens. Real UPID tracking and migration.
-            </p>
-          </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {/* Simulation */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedProvider('simulation');
+                    setTestResult(null);
+                  }}
+                  className={`flex flex-col p-4 rounded-xl border text-left transition-all cursor-pointer ${
+                    selectedProvider === 'simulation'
+                      ? 'border-blue-600 bg-blue-50/60 ring-2 ring-blue-600/20'
+                      : 'border-[#E2E8F0] bg-[#F8FAFC] hover:border-[#CBD5E1]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-[#0F172A]">Simulation</span>
+                    {selectedProvider === 'simulation' && <Check className="h-4 w-4 text-blue-600" />}
+                  </div>
+                  <span className="text-[10px] text-[#64748B] mt-1">Synthetic cluster</span>
+                  <span className="mt-3 text-[9px] font-bold text-emerald-700 uppercase">
+                    100% READY (LOCAL)
+                  </span>
+                </button>
 
-          {/* Card 3: Libvirt / KVM */}
-          <div
-            onClick={() => {
-              setSelectedProvider('libvirt');
-              setTestResult(null);
-            }}
-            className={`rounded-md border p-3.5 cursor-pointer transition-all ${
-              selectedProvider === 'libvirt'
-                ? 'border-blue-500 bg-[#14171E] shadow-sm ring-1 ring-blue-500/30'
-                : 'border-[#1C202A] bg-[#0A0C10] hover:border-[#2A303F]'
-            }`}
-          >
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="font-bold text-white text-xs">LIBVIRT / KVM</span>
-              {selectedProvider === 'libvirt' && <Check className="h-3.5 w-3.5 text-blue-400" />}
-            </div>
-            <p className="text-[10px] text-[#9CA3AF] leading-relaxed">
-              Linux hypervisors via remote URI (<code className="text-blue-300">qemu+ssh://</code>).
-            </p>
-          </div>
-        </div>
+                {/* Proxmox VE */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedProvider('proxmox');
+                    setTestResult(null);
+                  }}
+                  className={`flex flex-col p-4 rounded-xl border text-left transition-all cursor-pointer ${
+                    selectedProvider === 'proxmox'
+                      ? 'border-blue-600 bg-blue-50/60 ring-2 ring-blue-600/20'
+                      : 'border-[#E2E8F0] bg-[#F8FAFC] hover:border-[#CBD5E1]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-[#0F172A]">Proxmox VE</span>
+                    {selectedProvider === 'proxmox' && <Check className="h-4 w-4 text-blue-600" />}
+                  </div>
+                  <span className="text-[10px] text-[#64748B] mt-1">REST API v2</span>
+                  <span className="mt-3 text-[9px] font-bold text-blue-700 uppercase">
+                    PRIMARY LIVE DRIVER
+                  </span>
+                </button>
 
-        {/* Dynamic Provider Configuration Section */}
-        <div className="rounded-md border border-[#1C202A] bg-[#0A0C10] p-4 mb-5 space-y-3.5">
-          <div className="flex items-center justify-between border-b border-[#1C202A] pb-2">
-            <span className="text-[11px] font-bold text-slate-200 uppercase tracking-wide flex items-center space-x-1.5">
-              <Server className="h-3.5 w-3.5 text-blue-400" />
-              <span>
-                {selectedProvider === 'simulation' && 'Simulation Provider Configuration'}
-                {selectedProvider === 'proxmox' && 'Proxmox VE REST API Credentials'}
-                {selectedProvider === 'libvirt' && 'Libvirt Connection URI'}
-              </span>
-            </span>
-            <span className="text-[10px] text-[#6B7280]">
-              {selectedProvider === 'simulation' ? 'Local Memory' : 'Physical Network'}
-            </span>
-          </div>
-
-          {selectedProvider === 'simulation' && (
-            <div className="text-[11px] text-[#9CA3AF] leading-relaxed space-y-2 py-1">
-              <p>
-                The Simulation Provider enables safe development, algorithmic benchmarking, and PPO agent training without requiring physical hypervisor hardware.
-              </p>
-              <div className="grid grid-cols-3 gap-2 pt-1 font-mono text-[10px]">
-                <div className="rounded bg-[#14171E] p-2 border border-[#1C202A]">
-                  <span className="text-[#6B7280] block">COMPUTE NODES</span>
-                  <span className="text-white font-semibold">3 (node-01, node-02, node-03)</span>
-                </div>
-                <div className="rounded bg-[#14171E] p-2 border border-[#1C202A]">
-                  <span className="text-[#6B7280] block">ACTIVE WORKLOADS</span>
-                  <span className="text-white font-semibold">6 synthetic VMs (vm-101..106)</span>
-                </div>
-                <div className="rounded bg-[#14171E] p-2 border border-[#1C202A]">
-                  <span className="text-[#6B7280] block">LOAD DYNAMICS</span>
-                  <span className="text-white font-semibold">Sinusoidal drift + dirty pages</span>
-                </div>
+                {/* Libvirt / KVM */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedProvider('libvirt');
+                    setTestResult(null);
+                  }}
+                  className={`flex flex-col p-4 rounded-xl border text-left transition-all cursor-pointer ${
+                    selectedProvider === 'libvirt'
+                      ? 'border-blue-600 bg-blue-50/60 ring-2 ring-blue-600/20'
+                      : 'border-[#E2E8F0] bg-[#F8FAFC] hover:border-[#CBD5E1]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-[#0F172A]">Libvirt KVM</span>
+                    {selectedProvider === 'libvirt' && <Check className="h-4 w-4 text-blue-600" />}
+                  </div>
+                  <span className="text-[10px] text-[#64748B] mt-1">Linux virsh</span>
+                  <span className="mt-3 text-[9px] font-bold text-amber-700 uppercase">
+                    FUTURE EXTENSION
+                  </span>
+                </button>
               </div>
             </div>
-          )}
 
-          {selectedProvider === 'proxmox' && (
-            <div className="space-y-3 text-[11px]">
-              <div>
-                <label className="block text-[#9CA3AF] mb-1 font-medium">API Endpoint URL</label>
-                <input
-                  type="text"
-                  value={proxmoxEndpoint}
-                  onChange={(e) => setProxmoxEndpoint(e.target.value)}
-                  placeholder="https://192.168.1.100:8006/api2/json"
-                  className="w-full rounded border border-[#2A303F] bg-[#14171E] px-3 py-1.5 text-white focus:border-blue-500 focus:outline-none"
-                />
+            {/* Provider Configuration Forms */}
+            {selectedProvider === 'proxmox' && (
+              <div className="rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] p-4 space-y-4">
+                <div className="flex items-center space-x-2 text-xs font-bold text-[#0F172A]">
+                  <Server className="h-4 w-4 text-blue-600" />
+                  <span>PROXMOX VE REST API v2 CREDENTIALS</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[10px] text-[#64748B] uppercase mb-1">
+                      Endpoint Base URL:
+                    </label>
+                    <input
+                      type="text"
+                      value={proxmoxEndpoint}
+                      onChange={(e) => setProxmoxEndpoint(e.target.value)}
+                      placeholder="https://192.168.1.100:8006/api2/json"
+                      className="w-full rounded-lg border border-[#CBD5E1] bg-white px-3 py-1.5 text-xs text-[#0F172A] focus:outline-none focus:border-blue-600"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] text-[#64748B] uppercase mb-1">
+                      API User (Least-Privilege Token User):
+                    </label>
+                    <input
+                      type="text"
+                      value={proxmoxUser}
+                      onChange={(e) => setProxmoxUser(e.target.value)}
+                      placeholder="vmotion-api@pve"
+                      className="w-full rounded-lg border border-[#CBD5E1] bg-white px-3 py-1.5 text-xs text-[#0F172A] focus:outline-none focus:border-blue-600"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] text-[#64748B] uppercase mb-1">
+                      API Token ID:
+                    </label>
+                    <input
+                      type="text"
+                      value={proxmoxTokenId}
+                      onChange={(e) => setProxmoxTokenId(e.target.value)}
+                      placeholder="automation"
+                      className="w-full rounded-lg border border-[#CBD5E1] bg-white px-3 py-1.5 text-xs text-[#0F172A] focus:outline-none focus:border-blue-600"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] text-[#64748B] uppercase mb-1">
+                      API Token Secret (UUID):
+                    </label>
+                    <input
+                      type="password"
+                      value={proxmoxTokenSecret}
+                      onChange={(e) => setProxmoxTokenSecret(e.target.value)}
+                      placeholder={tokenConfiguredOnServer ? '•••••••••••••••• (Configured on backend)' : 'Enter token secret...'}
+                      className="w-full rounded-lg border border-[#CBD5E1] bg-white px-3 py-1.5 text-xs text-[#0F172A] focus:outline-none focus:border-blue-600"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2 pt-1">
+                  <input
+                    type="checkbox"
+                    id="verifySsl"
+                    checked={proxmoxVerifySsl}
+                    onChange={(e) => setProxmoxVerifySsl(e.target.checked)}
+                    className="rounded border-[#CBD5E1] text-blue-600 focus:ring-blue-500"
+                  />
+                  <label htmlFor="verifySsl" className="text-[11px] text-[#475569]">
+                    Verify TLS/SSL Certificate (Leave unchecked for self-signed homelab certificates)
+                  </label>
+                </div>
               </div>
+            )}
 
-              <div className="grid grid-cols-2 gap-3">
+            {selectedProvider === 'libvirt' && (
+              <div className="rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] p-4 space-y-3">
+                <div className="flex items-center space-x-2 text-xs font-bold text-[#0F172A]">
+                  <Server className="h-4 w-4 text-amber-600" />
+                  <span>LIBVIRT HYPERVISOR CONNECTION URI</span>
+                </div>
                 <div>
-                  <label className="block text-[#9CA3AF] mb-1 font-medium">User Account</label>
+                  <label className="block text-[10px] text-[#64748B] uppercase mb-1">
+                    Connection URI (SSH or TCP):
+                  </label>
                   <input
                     type="text"
-                    value={proxmoxUser}
-                    onChange={(e) => setProxmoxUser(e.target.value)}
-                    placeholder="root@pam or vmotion-bot@pve"
-                    className="w-full rounded border border-[#2A303F] bg-[#14171E] px-3 py-1.5 text-white focus:border-blue-500 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[#9CA3AF] mb-1 font-medium">API Token ID</label>
-                  <input
-                    type="text"
-                    value={proxmoxTokenId}
-                    onChange={(e) => setProxmoxTokenId(e.target.value)}
-                    placeholder="vmotion"
-                    className="w-full rounded border border-[#2A303F] bg-[#14171E] px-3 py-1.5 text-white focus:border-blue-500 focus:outline-none"
+                    value={libvirtUri}
+                    onChange={(e) => setLibvirtUri(e.target.value)}
+                    placeholder="qemu+ssh://root@192.168.1.100/system"
+                    className="w-full rounded-lg border border-[#CBD5E1] bg-white px-3 py-1.5 text-xs text-[#0F172A] focus:outline-none focus:border-blue-600"
                   />
                 </div>
               </div>
+            )}
 
-              <div>
-                <label className="block text-[#9CA3AF] mb-1 font-medium flex items-center justify-between">
-                  <span>API Token Secret (UUID)</span>
-                  {tokenConfiguredOnServer && (
-                    <span className="text-[10px] text-emerald-400 font-normal">
-                      ✓ Active token configured on server (leave blank to keep)
-                    </span>
+            {/* Test Connection Diagnostic Result */}
+            {testResult && (
+              <div className={`p-4 rounded-xl border ${
+                testResult.status === 'CONNECTED'
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                  : 'border-red-200 bg-red-50 text-red-900'
+              }`}>
+                <div className="flex items-center space-x-2 font-bold text-xs">
+                  {testResult.status === 'CONNECTED' ? (
+                    <Check className="h-4 w-4 text-emerald-600" />
+                  ) : (
+                    <AlertTriangle className="h-4 w-4 text-red-600" />
                   )}
-                </label>
-                <input
-                  type="password"
-                  value={proxmoxTokenSecret}
-                  onChange={(e) => setProxmoxTokenSecret(e.target.value)}
-                  placeholder={
-                    tokenConfiguredOnServer
-                      ? '••••••••••••••••••••••••••••••••••••'
-                      : 'Enter API token secret UUID (e.g. 550e8400-e29b-41d4-a716...)'
-                  }
-                  className="w-full rounded border border-[#2A303F] bg-[#14171E] px-3 py-1.5 text-white focus:border-blue-500 focus:outline-none placeholder:text-[#4B5563]"
-                />
+                  <span>DIAGNOSTIC STATUS: {testResult.status}</span>
+                </div>
+                <p className="text-[11px] mt-1 font-sans">{testResult.message}</p>
+                {testResult.latency_ms && (
+                  <div className="text-[10px] text-[#64748B] mt-1 font-mono">
+                    Round-trip API Latency: {testResult.latency_ms} ms · Nodes: {testResult.node_count} · VMs: {testResult.vm_count}
+                  </div>
+                )}
               </div>
+            )}
 
-              <div className="flex items-center space-x-2 pt-1">
-                <input
-                  type="checkbox"
-                  id="proxmox_verify_ssl"
-                  checked={proxmoxVerifySsl}
-                  onChange={(e) => setProxmoxVerifySsl(e.target.checked)}
-                  className="rounded border-[#2A303F] bg-[#14171E] text-blue-500 focus:ring-0 cursor-pointer"
-                />
-                <label htmlFor="proxmox_verify_ssl" className="text-[11px] text-[#9CA3AF] cursor-pointer">
-                  Verify SSL Certificate (Disable if Proxmox uses default self-signed certificate)
-                </label>
+            {/* Action Buttons */}
+            <div className="flex items-center justify-between pt-3 border-t border-[#E2E8F0]">
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={testingConnection}
+                className="flex items-center space-x-2 rounded-lg border border-[#CBD5E1] bg-white px-4 py-2 text-xs font-semibold text-[#0F172A] hover:bg-[#F8FAFC] transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {testingConnection ? (
+                  <>
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin text-blue-600" />
+                    <span>DIAGNOSING...</span>
+                  </>
+                ) : (
+                  <>
+                    <Activity className="h-3.5 w-3.5 text-blue-600" />
+                    <span>TEST CONNECTIVITY</span>
+                  </>
+                )}
+              </button>
+
+              <div className="flex items-center space-x-2.5">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="rounded-lg border border-[#CBD5E1] bg-white px-4 py-2 text-xs font-semibold text-[#475569] hover:bg-[#F8FAFC] cursor-pointer"
+                >
+                  CANCEL
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveAndSwitch}
+                  disabled={loading}
+                  className="flex items-center space-x-1.5 rounded-lg bg-[#0F172A] px-5 py-2 text-xs font-bold text-white hover:bg-[#1E293B] transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {loading ? 'SWITCHING...' : 'APPLY & ENGAGE'}
+                </button>
               </div>
             </div>
-          )}
-
-          {selectedProvider === 'libvirt' && (
-            <div className="space-y-3 text-[11px]">
-              <div>
-                <label className="block text-[#9CA3AF] mb-1 font-medium">Libvirt Remote URI</label>
-                <input
-                  type="text"
-                  value={libvirtUri}
-                  onChange={(e) => setLibvirtUri(e.target.value)}
-                  placeholder="qemu+ssh://root@192.168.1.100/system"
-                  className="w-full rounded border border-[#2A303F] bg-[#14171E] px-3 py-1.5 text-white focus:border-blue-500 focus:outline-none"
-                />
-              </div>
-              <p className="text-[10px] text-[#6B7280]">
-                Note: Libvirt remote connections on Windows require Linux SSH keys or libvirt remote daemon configured. For enterprise clusters, Proxmox VE REST API provides HTTPS authentication.
-              </p>
-            </div>
-          )}
-        </div>
-
-        {/* Diagnostic Test Runner & Feedback */}
-        <div className="rounded-md border border-[#1C202A] bg-[#0A0C10] p-4 mb-5">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-[11px] font-bold text-slate-200 uppercase tracking-wide flex items-center space-x-1.5">
-              <Activity className="h-3.5 w-3.5 text-blue-400" />
-              <span>Provider Preflight Diagnostic</span>
-            </span>
-            <button
-              onClick={handleTestConnection}
-              disabled={testingConnection}
-              className="inline-flex items-center space-x-1.5 rounded border border-blue-500/40 bg-blue-500/10 px-3 py-1 text-xs font-semibold text-blue-400 hover:bg-blue-500/20 hover:border-blue-500 transition-colors cursor-pointer disabled:opacity-50"
-            >
-              <RefreshCw className={`h-3 w-3 ${testingConnection ? 'animate-spin' : ''}`} />
-              <span>{testingConnection ? 'TESTING...' : 'TEST CONNECTION'}</span>
-            </button>
           </div>
-
-          {testResult ? (
-            <div className="space-y-2.5 pt-1">
-              <div className="flex items-center justify-between border-b border-[#1C202A] pb-2">
-                <span className="text-[11px] text-[#6B7280]">DIAGNOSTIC STATUS:</span>
-                {getStatusBadge(testResult.status)}
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 font-mono text-[10px]">
-                <div className="rounded bg-[#14171E] p-2 border border-[#1C202A]">
-                  <span className="text-[#6B7280] block flex items-center space-x-1">
-                    <Clock className="h-2.5 w-2.5" />
-                    <span>LATENCY</span>
-                  </span>
-                  <span className="text-white font-semibold">
-                    {testResult.latency_ms !== null && testResult.latency_ms !== undefined
-                      ? `${testResult.latency_ms} ms`
-                      : 'N/A'}
-                  </span>
-                </div>
-                <div className="rounded bg-[#14171E] p-2 border border-[#1C202A]">
-                  <span className="text-[#6B7280] block flex items-center space-x-1">
-                    <Server className="h-2.5 w-2.5" />
-                    <span>NODES</span>
-                  </span>
-                  <span className="text-white font-semibold">{testResult.node_count}</span>
-                </div>
-                <div className="rounded bg-[#14171E] p-2 border border-[#1C202A]">
-                  <span className="text-[#6B7280] block flex items-center space-x-1">
-                    <Cpu className="h-2.5 w-2.5" />
-                    <span>WORKLOADS</span>
-                  </span>
-                  <span className="text-white font-semibold">{testResult.vm_count}</span>
-                </div>
-                <div className="rounded bg-[#14171E] p-2 border border-[#1C202A] truncate">
-                  <span className="text-[#6B7280] block">VERSION</span>
-                  <span className="text-white font-semibold truncate block" title={testResult.hypervisor_version || 'N/A'}>
-                    {testResult.hypervisor_version || 'N/A'}
-                  </span>
-                </div>
-              </div>
-
-              <div className="rounded bg-[#14171E] p-2.5 border border-[#1C202A] text-[11px]">
-                <span className="text-[#6B7280] block text-[10px] mb-0.5">DETAIL:</span>
-                <p className={testResult.status === 'CONNECTED' ? 'text-emerald-300' : 'text-amber-300'}>
-                  {testResult.message}
-                </p>
-              </div>
-            </div>
-          ) : (
-            <p className="text-[11px] text-[#6B7280] italic">
-              Click &ldquo;TEST CONNECTION&rdquo; to query hypervisor status, verify API tokens, and check inventory discovery before activating.
-            </p>
-          )}
-        </div>
-
-        {/* Architectural Guard Warning */}
-        <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3 text-[11px] text-amber-300 mb-5 flex items-start space-x-2.5">
-          <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
-          <span>
-            <strong>Architectural Guard Active:</strong> When live infrastructure is selected, VMotion AI communicates directly with your hypervisor. If credentials are missing or the host is unreachable, the system prominently declares <strong>LIVE CLUSTER DISCONNECTED</strong> without falling back to simulation.
-          </span>
-        </div>
-        </>
         ) : (
-          <div className="space-y-4 mb-5 max-h-[480px] overflow-y-auto pr-1">
-            <div className="rounded border border-[#1C202A] bg-[#0A0C10] p-3 text-[11px] text-[#9CA3AF] leading-relaxed">
-              <span className="text-white font-semibold block mb-1">
-                STRICT CLAIMS & VERIFICATION POLICY:
-              </span>
-              VMotion AI enforces zero false claims. Operations tested in simulation are labelled
-              <strong className="text-blue-400"> TESTED LOCALLY</strong>. Code targeting physical hypervisors is labelled
-              <strong className="text-purple-400"> IMPLEMENTED</strong>. Only tests verified against real physical hypervisors receive
-              <strong className="text-emerald-400"> REAL INFRASTRUCTURE TESTED</strong> status.
-            </div>
-
-            {/* Matrix Table */}
-            <div className="rounded border border-[#1C202A] overflow-hidden">
-              <table className="w-full text-left text-[11px] font-mono border-collapse">
-                <thead className="bg-[#14171E] text-[#6B7280] border-b border-[#1C202A]">
+          /* Capability Matrix Tab */
+          <div className="space-y-4">
+            <div className="rounded-xl border border-[#E2E8F0] overflow-hidden">
+              <table className="w-full text-left text-[11px]">
+                <thead className="bg-[#F8FAFC] border-b border-[#E2E8F0] text-[#64748B] uppercase font-bold text-[10px]">
                   <tr>
-                    <th className="p-2.5">OP ID</th>
-                    <th className="p-2.5">OPERATION</th>
-                    <th className="p-2.5">SIMULATION</th>
-                    <th className="p-2.5">PROXMOX VE</th>
-                    <th className="p-2.5">LIBVIRT / KVM</th>
+                    <th className="p-3">Capability</th>
+                    <th className="p-3">SimulationProvider</th>
+                    <th className="p-3">ProxmoxVEProvider</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[#1C202A] bg-[#0A0C10]">
-                  {[
-                    { id: 'OP-01', name: 'Node Discovery', sim: 'TESTED LOCALLY', pve: 'IMPLEMENTED', kvm: 'NOT VERIFIED' },
-                    { id: 'OP-02', name: 'VM Discovery', sim: 'TESTED LOCALLY', pve: 'IMPLEMENTED', kvm: 'NOT VERIFIED' },
-                    { id: 'OP-03', name: 'Telemetry Normalization', sim: 'TESTED LOCALLY', pve: 'IMPLEMENTED', kvm: 'NOT VERIFIED' },
-                    { id: 'OP-04', name: 'VM State Retrieval', sim: 'TESTED LOCALLY', pve: 'IMPLEMENTED', kvm: 'NOT VERIFIED' },
-                    { id: 'OP-05', name: 'Pre-Migration Validation', sim: 'TESTED LOCALLY', pve: 'IMPLEMENTED', kvm: 'NOT VERIFIED' },
-                    { id: 'OP-06', name: 'Live Migration Dispatch', sim: 'TESTED LOCALLY', pve: 'IMPLEMENTED', kvm: 'NOT VERIFIED' },
-                    { id: 'OP-07', name: 'Task Monitoring (UPID)', sim: 'TESTED LOCALLY', pve: 'IMPLEMENTED', kvm: 'NOT VERIFIED' },
-                    { id: 'OP-08', name: 'Placement Verification', sim: 'TESTED LOCALLY', pve: 'IMPLEMENTED', kvm: 'NOT VERIFIED' },
-                    { id: 'OP-09', name: 'VM Health Verification', sim: 'TESTED LOCALLY', pve: 'IMPLEMENTED', kvm: 'NOT VERIFIED' },
-                    { id: 'OP-10', name: 'Preflight Diagnostic Test', sim: 'TESTED LOCALLY', pve: 'TESTED LOCALLY', kvm: 'TESTED LOCALLY' },
-                    { id: 'OP-11', name: 'Disconnected Guard', sim: 'TESTED LOCALLY', pve: 'TESTED LOCALLY', kvm: 'TESTED LOCALLY' },
-                  ].map((row) => (
-                    <tr key={row.id} className="hover:bg-[#14171E]/50">
-                      <td className="p-2.5 text-blue-400 font-bold">{row.id}</td>
-                      <td className="p-2.5 text-white">{row.name}</td>
-                      <td className="p-2.5">
-                        <span className="rounded bg-blue-500/10 text-blue-400 px-1.5 py-0.5 border border-blue-500/30 text-[10px]">
-                          {row.sim}
-                        </span>
-                      </td>
-                      <td className="p-2.5">
-                        <span className={`rounded px-1.5 py-0.5 text-[10px] border ${
-                          row.pve === 'TESTED LOCALLY'
-                            ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
-                            : 'bg-purple-500/10 text-purple-300 border-purple-500/30'
-                        }`}>
-                          {row.pve}
-                        </span>
-                      </td>
-                      <td className="p-2.5">
-                        <span className={`rounded px-1.5 py-0.5 text-[10px] border ${
-                          row.kvm === 'TESTED LOCALLY'
-                            ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
-                            : 'bg-slate-500/10 text-slate-400 border-slate-500/30'
-                        }`}>
-                          {row.kvm}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
+                <tbody className="divide-y divide-[#E2E8F0]">
+                  <tr>
+                    <td className="p-3 font-semibold text-[#0F172A]">Node Discovery</td>
+                    <td className="p-3 text-emerald-700">LOCAL TESTED</td>
+                    <td className="p-3 text-blue-700 font-semibold">IMPLEMENTED</td>
+                  </tr>
+                  <tr>
+                    <td className="p-3 font-semibold text-[#0F172A]">Telemetry Collection</td>
+                    <td className="p-3 text-emerald-700">LOCAL TESTED</td>
+                    <td className="p-3 text-blue-700 font-semibold">IMPLEMENTED</td>
+                  </tr>
+                  <tr>
+                    <td className="p-3 font-semibold text-[#0F172A]">Live Migration Dispatch</td>
+                    <td className="p-3 text-emerald-700">LOCAL TESTED</td>
+                    <td className="p-3 text-blue-700 font-semibold">IMPLEMENTED</td>
+                  </tr>
+                  <tr>
+                    <td className="p-3 font-semibold text-[#0F172A]">UPID Task Polling</td>
+                    <td className="p-3 text-emerald-700">LOCAL TESTED</td>
+                    <td className="p-3 text-blue-700 font-semibold">IMPLEMENTED</td>
+                  </tr>
+                  <tr>
+                    <td className="p-3 font-semibold text-[#0F172A]">Placement Verification</td>
+                    <td className="p-3 text-emerald-700">LOCAL TESTED</td>
+                    <td className="p-3 text-blue-700 font-semibold">IMPLEMENTED</td>
+                  </tr>
+                  <tr>
+                    <td className="p-3 font-semibold text-[#0F172A]">QEMU Guest-Agent Ping</td>
+                    <td className="p-3 text-emerald-700">LOCAL TESTED</td>
+                    <td className="p-3 text-blue-700 font-semibold">IMPLEMENTED</td>
+                  </tr>
+                  <tr className="bg-amber-50/50">
+                    <td className="p-3 font-bold text-amber-900">Physical Hardware Testing</td>
+                    <td className="p-3 text-[#64748B]">N/A (Synthetic)</td>
+                    <td className="p-3 text-amber-800 font-bold">REAL HARDWARE UNVERIFIED</td>
+                  </tr>
                 </tbody>
               </table>
             </div>
+
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-[11px] text-amber-900">
+              <strong>Strict Engineering Boundary:</strong> Real Proxmox cluster hardware connectivity remains unverified until physical cluster hardware is provisioned and baseline manual migration succeeds.
+            </div>
           </div>
         )}
-
-        {/* Footer Actions */}
-        <div className="flex items-center justify-end space-x-3 border-t border-[#1C202A] pt-4">
-          <button
-            onClick={onClose}
-            className="rounded border border-[#2A303F] px-4 py-2 text-[#9CA3AF] hover:text-white hover:border-[#3D465C] cursor-pointer transition-colors"
-          >
-            CANCEL
-          </button>
-          <button
-            onClick={handleSaveAndApply}
-            disabled={loading}
-            className="rounded border border-blue-500 bg-blue-600 px-5 py-2 font-semibold text-white hover:bg-blue-500 transition-colors shadow-lg cursor-pointer disabled:opacity-50 flex items-center space-x-2"
-          >
-            <ShieldCheck className="h-4 w-4" />
-            <span>{loading ? 'APPLYING...' : 'SAVE & APPLY PROVIDER'}</span>
-          </button>
-        </div>
       </div>
     </div>
   );

@@ -11,7 +11,7 @@ import { AuditTimeline } from './components/AuditTimeline';
 import { ModeSettingsModal } from './components/ModeSettingsModal';
 
 export function App() {
-  const [activeTab, setActiveTab] = useState<string>('overview');
+  const [activeSection, setActiveSection] = useState<string>('overview');
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
 
   const {
@@ -41,48 +41,70 @@ export function App() {
       requestAnimationFrame(raf);
     }
 
-    requestAnimationFrame(raf);
+    const rafId = requestAnimationFrame(raf);
 
     return () => {
+      cancelAnimationFrame(rafId);
       lenis.destroy();
     };
   }, []);
 
-  const handleNavigateTab = (tab: string) => {
-    setActiveTab(tab);
-    const element = document.getElementById(`section-${tab}`);
+  // Scroll spy to keep activeSection in sync with scroll position
+  useEffect(() => {
+    const sectionIds = ['overview', 'topology', 'ai-engine', 'safety', 'migrations', 'audit'];
+    const handleScroll = () => {
+      const scrollPosition = window.scrollY + 220;
+      for (let i = sectionIds.length - 1; i >= 0; i--) {
+        const id = sectionIds[i];
+        const el = document.getElementById(`section-${id}`);
+        if (el && scrollPosition >= el.offsetTop) {
+          setActiveSection(id);
+          break;
+        }
+      }
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  const handleNavigateSection = (sectionId: string) => {
+    setActiveSection(sectionId);
+    const element = document.getElementById(`section-${sectionId}`);
     if (element) {
       element.scrollIntoView({ behavior: 'smooth' });
     }
   };
 
+  const pendingProposal = proposals.find(p => p.status === 'PENDING_APPROVAL') || null;
+
   return (
-    <div className="min-h-screen bg-[#08090C] text-[#F3F4F6] selection:bg-blue-500 selection:text-white">
+    <div className="min-h-screen bg-[#F8F9FA] text-[#0F172A] selection:bg-blue-600 selection:text-white technical-grid-light relative">
       {/* Top Header */}
       <Header
         cluster={cluster}
         wsConnected={wsConnected}
-        activeTab={activeTab}
-        setActiveTab={handleNavigateTab}
+        activeSection={activeSection}
+        onNavigateSection={handleNavigateSection}
         onOpenSettings={() => setIsSettingsOpen(true)}
       />
 
-      {/* Main Content Sections */}
-      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-16 pb-24">
-        {/* Section 01: Hero & Overview */}
-        <section id="section-overview">
+      {/* Main Content Sections - Single Scroll Narrative */}
+      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-24 pb-32 pt-4">
+        {/* Section 01: Hero & Spatial Cluster Overview */}
+        <section id="section-overview" className="scroll-mt-20">
           <HeroSection
             cluster={cluster}
             telemetry={telemetry}
             recommendation={recommendation}
             proposals={proposals}
-            onNavigateTab={handleNavigateTab}
+            onNavigateSection={handleNavigateSection}
             onTriggerAi={actions.refresh}
           />
         </section>
 
-        {/* Section 02: Topology & Interconnect */}
-        <section id="section-topology" className="pt-8">
+        {/* Section 02: Compute Fabric & Interconnect Topology */}
+        <section id="section-topology" className="scroll-mt-20 pt-6">
           <TopologyCanvas
             cluster={cluster}
             telemetry={telemetry}
@@ -91,8 +113,8 @@ export function App() {
           />
         </section>
 
-        {/* Section 03: AI Engine & Rationale */}
-        <section id="section-ai-engine" className="pt-8">
+        {/* Section 03: PPO V5 AI Decision Engine */}
+        <section id="section-ai-engine" className="scroll-mt-20 pt-6">
           <AiDecisionSection
             recommendation={recommendation}
             safetyEvaluation={safetyEvaluation}
@@ -103,23 +125,26 @@ export function App() {
           />
         </section>
 
-        {/* Section 04: Deterministic Safety Gate */}
-        <section id="section-safety" className="pt-8">
+        {/* Section 04: Deterministic Safety Gate & Operator Signoff */}
+        <section id="section-safety" className="scroll-mt-20 pt-6">
           <SafetyGateSection
             safetyEvaluation={safetyEvaluation}
+            activeProposal={pendingProposal}
+            onApprove={actions.approveProposal}
+            onReject={actions.rejectProposal}
           />
         </section>
 
-        {/* Section 05: Migration Lifecycle & Verification */}
-        <section id="section-migrations" className="pt-8">
+        {/* Section 05: Migration Orchestration FSM & Placement Health */}
+        <section id="section-migrations" className="scroll-mt-20 pt-6">
           <MigrationCenter
             activeTasks={activeTasks}
             completedTasks={completedTasks}
           />
         </section>
 
-        {/* Section 06: Immutable Audit Ledger */}
-        <section id="section-audit" className="pt-8">
+        {/* Section 06: Append-Only Forensic Audit Ledger */}
+        <section id="section-audit" className="scroll-mt-20 pt-6">
           <AuditTimeline
             entries={auditEntries}
           />
@@ -134,22 +159,36 @@ export function App() {
         onSwitchProvider={actions.switchProviderMode}
       />
 
-      {/* Footer */}
-      <footer className="border-t border-[#1C202A] bg-[#050608] py-8 text-center font-mono text-xs text-[#6B7280]">
-        <div className="mx-auto max-w-7xl px-4 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center space-x-2">
-            <span className="text-white font-semibold">VMOTION AI</span>
-            <span>—</span>
-            <span>HYPERVISOR LIVE MIGRATION CONTROL PLANE</span>
+      {/* Architectural Light Footer */}
+      <footer className="border-t border-[#E2E8F0] bg-white py-12 text-center font-mono text-xs text-[#64748B] shadow-2xs">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row items-center justify-between gap-6">
+          <div className="flex flex-col sm:flex-row items-center space-y-1 sm:space-y-0 sm:space-x-3 text-left">
+            <span className="font-bold tracking-wider text-[#0F172A]">VMOTION AI</span>
+            <span className="hidden sm:inline text-[#CBD5E1]">•</span>
+            <span className="text-[#475569]">HYPERVISOR LIVE MIGRATION CONTROL PLANE</span>
+            <span className="hidden sm:inline text-[#CBD5E1]">•</span>
+            <span className="text-[11px] text-[#94A3B8]">PROD-READY ARCHITECTURE</span>
           </div>
 
-          <div className="flex items-center space-x-4 text-[11px]">
-            <span>ENGINE: FASTAPI + PYTHON 3.11</span>
-            <span className="text-[#3D465C]">|</span>
-            <span>RL POLICY: MASKABLE_PPO (103 FEATURES)</span>
-            <span className="text-[#3D465C]">|</span>
-            <span className="text-emerald-400">SAFETY: DETERMINISTIC GATE</span>
+          <div className="flex flex-wrap items-center justify-center gap-4 text-[11px]">
+            <span className="inline-flex items-center space-x-1.5 rounded bg-[#F1F5F9] px-2 py-0.5 border border-[#E2E8F0]">
+              <span className="text-[#64748B]">POLICY:</span>
+              <span className="font-semibold text-[#0F172A]">PPO V5 (103 FEATURES)</span>
+            </span>
+            <span className="inline-flex items-center space-x-1.5 rounded bg-[#F1F5F9] px-2 py-0.5 border border-[#E2E8F0]">
+              <span className="text-[#64748B]">SAFETY:</span>
+              <span className="font-semibold text-emerald-700">DETERMINISTIC 8-RULE GATE</span>
+            </span>
+            <span className="inline-flex items-center space-x-1.5 rounded bg-[#F1F5F9] px-2 py-0.5 border border-[#E2E8F0]">
+              <span className="text-[#64748B]">GOVERNANCE:</span>
+              <span className="font-semibold text-blue-700">HUMAN-IN-THE-LOOP</span>
+            </span>
           </div>
+        </div>
+
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-6 pt-6 border-t border-[#F1F5F9] flex flex-col sm:flex-row items-center justify-between text-[11px] text-[#94A3B8]">
+          <p>STRICT ISOLATION PROTOCOL ACTIVE. SIMULATION RUNS ON SYNTHETIC TELEMETRY. NO UNVERIFIED HARDWARE ACTIONS.</p>
+          <p className="mt-2 sm:mt-0">SPECIFICATION v1.0.0 • FASTAPI &amp; REACT 19</p>
         </div>
       </footer>
     </div>

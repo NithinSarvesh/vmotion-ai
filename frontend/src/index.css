@@ -2,24 +2,29 @@
 
 @layer base {
   :root {
-    --bg-base: #08090C;
-    --bg-surface: #0E1015;
-    --bg-surface-elevated: #14171E;
-    --bg-panel: #111319;
+    --bg-base: #F8F9FA;
+    --bg-surface: #FFFFFF;
+    --bg-surface-elevated: #FFFFFF;
+    --bg-surface-subtle: #F1F4F9;
+    --bg-panel: #FFFFFF;
     
-    --border-subtle: #1C202A;
-    --border-strong: #2A303F;
-    --border-active: #3D465C;
+    --border-subtle: #E2E8F0;
+    --border-strong: #CBD5E1;
+    --border-active: #94A3B8;
     
-    --text-primary: #F3F4F6;
-    --text-secondary: #9CA3AF;
-    --text-muted: #6B7280;
-    --text-dim: #4B5563;
+    --text-primary: #0F172A;
+    --text-secondary: #475569;
+    --text-muted: #94A3B8;
+    --text-dim: #CBD5E1;
     
-    --status-healthy: #10B981;
-    --status-info: #3B82F6;
-    --status-warning: #F59E0B;
-    --status-danger: #EF4444;
+    --accent-blue: #2563EB;
+    --accent-violet: #7C3AED;
+    --accent-cyan: #0284C7;
+    
+    --status-healthy: #059669;
+    --status-info: #2563EB;
+    --status-warning: #D97706;
+    --status-danger: #DC2626;
     
     --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   }
@@ -28,7 +33,7 @@
     background-color: var(--bg-base);
     color: var(--text-primary);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    color-scheme: dark;
+    color-scheme: light;
     scroll-behavior: smooth;
     overflow-x: hidden;
   }
@@ -38,35 +43,53 @@
     padding: 0;
     min-height: 100vh;
     background-color: var(--bg-base);
+    color: var(--text-primary);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
 
-  /* Custom minimal technical scrollbar */
+  /* Custom refined light technical scrollbar */
   ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
   }
   ::-webkit-scrollbar-track {
-    background: #08090C;
+    background: #F1F5F9;
   }
   ::-webkit-scrollbar-thumb {
-    background: #1F2430;
+    background: #CBD5E1;
     border-radius: 3px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #2E3547;
+    background: #94A3B8;
   }
 }
 
-.technical-grid {
+/* Technical light architectural grid */
+.technical-grid-light {
   background-image: 
-    linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-  background-size: 40px 40px;
+    linear-gradient(to right, rgba(0, 0, 0, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
 }
 
-.technical-dots {
-  background-image: radial-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+.technical-dots-light {
+  background-image: radial-gradient(rgba(0, 0, 0, 0.08) 1px, transparent 1px);
   background-size: 24px 24px;
+}
+
+/* Glassmorphism light panels */
+.glass-panel-light {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+}
+
+.glass-panel-light-hover {
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.glass-panel-light-hover:hover {
+  border-color: rgba(148, 163, 184, 0.6);
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.06);
 }

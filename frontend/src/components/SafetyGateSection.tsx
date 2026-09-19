@@ -1,78 +1,79 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { 
   CheckCircle2, 
   XCircle, 
   Lock,
-  ShieldAlert,
   ShieldCheck,
-  AlertTriangle
+  ArrowRight,
+  UserCheck,
+  Check,
+  X
 } from 'lucide-react';
-import type { SafetyEvaluation, SafetyCheckResult } from '../types';
+import type { SafetyEvaluation, SafetyCheckResult, PendingProposal } from '../types';
 
 interface SafetyGateSectionProps {
   safetyEvaluation: SafetyEvaluation | null;
+  activeProposal?: PendingProposal | null;
+  onApprove?: (proposalId: string) => Promise<boolean>;
+  onReject?: (proposalId: string) => Promise<boolean>;
 }
 
-const ERROR_CODE_MAP: Record<string, string> = {
-  VM_RUNNING_STATE: 'ERR_VM_NOT_RUNNING',
-  DISTINCT_TARGET: 'ERR_IDENTICAL_SOURCE_DEST',
-  SOURCE_NODE_HEALTH: 'ERR_SOURCE_NODE_UNHEALTHY',
-  DEST_NODE_HEALTH: 'ERR_DEST_NODE_OFFLINE',
-  DEST_RAM_HEADROOM: 'ERR_INSUFFICIENT_RAM',
-  DEST_CPU_CAPACITY: 'ERR_CPU_OVERLOAD_PROJECTED',
-  STORAGE_AND_QUORUM: 'ERR_STORAGE_QUORUM_LOST',
-  COOLDOWN_PERIOD: 'ERR_COOLDOWN_ACTIVE',
-};
+export const SafetyGateSection: React.FC<SafetyGateSectionProps> = ({ 
+  safetyEvaluation,
+  activeProposal,
+  onApprove,
+  onReject
+}) => {
+  const [submitting, setSubmitting] = useState<boolean>(false);
 
-export const SafetyGateSection: React.FC<SafetyGateSectionProps> = ({ safetyEvaluation }) => {
   const defaultRules: SafetyCheckResult[] = [
     {
       check_name: 'VM_RUNNING_STATE',
       passed: true,
       severity: 'CRITICAL',
-      message: 'Target workload is active and operational in running hypervisor state.'
+      message: 'Workload active state confirmed. Target workload is operational in running hypervisor state.'
     },
     {
       check_name: 'DISTINCT_TARGET',
       passed: true,
       severity: 'CRITICAL',
-      message: 'Source and destination compute nodes are distinct physical hosts.'
+      message: 'Inter-node distinct trajectory validated. Source and destination are separate physical hosts.'
     },
     {
       check_name: 'SOURCE_NODE_HEALTH',
       passed: true,
       severity: 'CRITICAL',
-      message: 'Source hypervisor daemon reports zero hardware alarms and active heartbeat.'
+      message: 'Source host online and responsive. Hypervisor daemon reports zero alarms and active heartbeat.'
     },
     {
       check_name: 'DEST_NODE_HEALTH',
       passed: true,
       severity: 'CRITICAL',
-      message: 'Destination hypervisor daemon is online and responsive over cluster network.'
+      message: 'Destination host online and reachable. Destination hypervisor daemon responsive on cluster fabric.'
     },
     {
       check_name: 'DEST_RAM_HEADROOM',
       passed: true,
       severity: 'CRITICAL',
-      message: 'Destination unallocated memory comfortably exceeds VM footprint + 20% buffer.'
+      message: 'Destination memory capacity confirmed. Unallocated RAM exceeds VM footprint with 20% safety margin.'
     },
     {
       check_name: 'DEST_CPU_CAPACITY',
       passed: true,
       severity: 'CRITICAL',
-      message: 'Projected post-migration CPU load remains safely below 85.0% threshold.'
+      message: 'Destination CPU capacity verified. Projected post-migration CPU load remains safely below 85%.'
     },
     {
       check_name: 'STORAGE_AND_QUORUM',
       passed: true,
       severity: 'CRITICAL',
-      message: 'Shared datastore mount verified and cluster quorum consensus intact.'
+      message: 'Storage and quorum consensus intact. Datastore prerequisites verified and cluster quorum active.'
     },
     {
       check_name: 'COOLDOWN_PERIOD',
       passed: true,
-      severity: 'CRITICAL',
-      message: 'Workload migration cooldown satisfied (minimum 60s since last migration).'
+      severity: 'WARNING',
+      message: 'Cooldown policy satisfied. Minimum 60 seconds elapsed since prior migration event.'
     }
   ];
 
@@ -84,151 +85,186 @@ export const SafetyGateSection: React.FC<SafetyGateSectionProps> = ({ safetyEval
   const passedCount = safetyEvaluation ? safetyEvaluation.passed_checks : checksToDisplay.filter(c => c.passed).length;
   const totalCount = safetyEvaluation ? safetyEvaluation.total_checks : checksToDisplay.length;
 
+  const handleApprove = async () => {
+    if (!activeProposal || !onApprove) return;
+    setSubmitting(true);
+    await onApprove(activeProposal.proposal_id);
+    setSubmitting(false);
+  };
+
+  const handleReject = async () => {
+    if (!activeProposal || !onReject) return;
+    setSubmitting(true);
+    await onReject(activeProposal.proposal_id);
+    setSubmitting(false);
+  };
+
   return (
     <div className="w-full space-y-8 font-mono text-xs">
-      {/* Signature Architectural Banner */}
-      <div className="rounded-xl border border-[#2A303F] bg-gradient-to-b from-[#11141C] via-[#0B0D13] to-[#07080C] p-8 md:p-12 text-center relative overflow-hidden shadow-2xl">
-        <div className="pointer-events-none absolute -top-24 left-1/2 -translate-x-1/2 h-56 w-[32rem] rounded-full bg-blue-500/10 blur-3xl" />
-        
-        <div className="inline-flex items-center space-x-2 rounded border border-[#3D465C] bg-[#161922] px-3.5 py-1 text-xs text-[#9CA3AF] mb-5">
-          <Lock className="h-3.5 w-3.5 text-amber-400" />
-          <span className="tracking-wider">DETERMINISTIC CONTROL POLICY · HARD BOUNDARY LAYER</span>
+      
+      {/* Editorial Centerpiece Banner */}
+      <div className="rounded-2xl border border-[#CBD5E1] bg-gradient-to-b from-white via-[#F8FAFC] to-[#F1F5F9] p-8 sm:p-12 text-center relative overflow-hidden shadow-xs">
+        <div className="inline-flex items-center space-x-2 rounded-full border border-amber-300 bg-amber-50 px-4 py-1 text-xs text-amber-800 font-semibold mb-6 shadow-2xs">
+          <Lock className="h-3.5 w-3.5 text-amber-600" />
+          <span className="tracking-wider uppercase">DETERMINISTIC CONTROL POLICY · HARD BOUNDARY LAYER</span>
         </div>
 
-        <h2 className="text-3xl sm:text-5xl lg:text-6xl font-extralight uppercase tracking-tight text-white leading-tight font-sans">
-          The AI Doesn’t Get <br />
-          <span className="font-bold text-transparent bg-clip-text bg-gradient-to-r from-red-400 via-amber-300 to-white">
-            The Final Word.
+        <h2 className="text-3xl sm:text-5xl lg:text-6xl font-light uppercase tracking-tight text-[#0F172A] leading-tight font-sans">
+          THE AI DOESN'T <br />
+          <span className="font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-red-600 via-amber-600 to-[#0F172A]">
+            GET THE FINAL WORD.
           </span>
         </h2>
 
-        <p className="mt-4 max-w-2xl mx-auto text-sm sm:text-base text-[#9CA3AF] font-normal leading-relaxed font-sans">
-          Neural networks optimize mathematical rewards; deterministic gates enforce infrastructure safety. 
-          Every candidate migration must achieve a 100% pass rate across all 8 non-negotiable physical constraints before operator authorization is unlocked.
+        <p className="text-sm sm:text-base text-[#475569] max-w-2xl mx-auto mt-4 font-normal font-sans leading-relaxed">
+          Reinforcement learning proposes candidates to optimize cluster load balance. 
+          Deterministic safety code enforces absolute physical constraints. No AI recommendation can bypass 
+          memory headroom, storage, quorum, or human authorization.
         </p>
 
-        {/* Global Verdict Pill */}
-        <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
-          <div className={`inline-flex items-center space-x-2.5 rounded-lg px-5 py-2.5 font-bold tracking-wider text-xs shadow-xl transition-all ${
-            isBlocked
-              ? 'border border-red-500/60 bg-red-500/20 text-red-300 shadow-[0_0_25px_rgba(239,68,68,0.25)]'
-              : 'border border-emerald-500/60 bg-emerald-500/20 text-emerald-300 shadow-[0_0_25px_rgba(16,185,129,0.25)]'
-          }`}>
-            {isBlocked ? (
-              <>
-                <ShieldAlert className="h-4 w-4 text-red-400 shrink-0" />
-                <span>MIGRATION BLOCKED — {totalCount - passedCount} FAILED CONSTRAINT(S)</span>
-              </>
-            ) : (
-              <>
-                <ShieldCheck className="h-4 w-4 text-emerald-400 shrink-0" />
-                <span>SAFETY GATE PASSED — ALL {totalCount}/{totalCount} CONDITIONS SATISFIED</span>
-              </>
-            )}
+        {/* Sequential Architecture Flow */}
+        <div className="mt-8 pt-6 border-t border-[#E2E8F0] flex flex-wrap items-center justify-center gap-3 font-mono text-xs">
+          <div className="flex items-center space-x-1.5 rounded-lg border border-[#E2E8F0] bg-white px-3.5 py-1.5 shadow-2xs">
+            <span className="text-purple-600 font-bold">PPO PROPOSAL</span>
+          </div>
+          <ArrowRight className="h-4 w-4 text-[#94A3B8]" />
+          <div className="flex items-center space-x-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3.5 py-1.5 font-bold text-blue-800 shadow-2xs">
+            <span>DETERMINISTIC SAFETY GATE</span>
+          </div>
+          <ArrowRight className="h-4 w-4 text-[#94A3B8]" />
+          <div className="flex items-center space-x-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-1.5 font-bold text-amber-800 shadow-2xs">
+            <span>HUMAN APPROVAL</span>
+          </div>
+          <ArrowRight className="h-4 w-4 text-[#94A3B8]" />
+          <div className="flex items-center space-x-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-1.5 font-bold text-emerald-800 shadow-2xs">
+            <span>HYPERVISOR EXECUTION</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Human-in-the-Loop Operator Gate (Active if pending approval) */}
+      {activeProposal && activeProposal.status === 'PENDING_APPROVAL' && (
+        <div className="rounded-2xl border-2 border-amber-400 bg-amber-50/70 p-6 shadow-sm">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+            <div className="flex items-start space-x-3.5">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-500 text-white shadow-xs">
+                <UserCheck className="h-5 w-5" />
+              </div>
+              <div>
+                <div className="flex items-center space-x-2">
+                  <span className="rounded-full bg-amber-200 text-amber-900 px-2 py-0.5 text-[10px] font-bold uppercase">
+                    STAGE 03 · OPERATOR GATE
+                  </span>
+                  <span className="text-[11px] text-amber-800 font-semibold">ALL 8 SAFETY CHECKS SATISFIED</span>
+                </div>
+                <h3 className="text-base font-bold text-[#0F172A] mt-1">
+                  Authorize Live Migration: Workload <span className="text-blue-600">{activeProposal.vm_id}</span> ({activeProposal.source_node} → {activeProposal.target_node})
+                </h3>
+                <p className="text-xs text-[#475569] mt-0.5 font-sans">
+                  {activeProposal.reason} · Selection Probability: {(activeProposal.confidence_score * 100).toFixed(1)}% · Strategy: {(activeProposal as any).with_local_disks ? '--with-local-disks 1 (NBD mirror)' : 'Shared Datastore'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-3 shrink-0">
+              <button
+                onClick={handleReject}
+                disabled={submitting}
+                className="flex items-center space-x-1.5 rounded-lg border border-red-300 bg-white px-4 py-2.5 font-semibold text-red-700 hover:bg-red-50 transition-colors shadow-2xs cursor-pointer disabled:opacity-50"
+              >
+                <X className="h-4 w-4" />
+                <span>DECLINE</span>
+              </button>
+
+              <button
+                onClick={handleApprove}
+                disabled={submitting}
+                className="flex items-center space-x-2 rounded-lg bg-emerald-600 px-5 py-2.5 font-bold text-white hover:bg-emerald-700 transition-colors shadow-sm cursor-pointer disabled:opacity-50"
+              >
+                <Check className="h-4 w-4" />
+                <span>AUTHORIZE DISPATCH</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 8-Rule Sequential Audit Pipeline */}
+      <div className="rounded-2xl border border-[#E2E8F0] bg-white p-6 shadow-xs space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#E2E8F0] pb-4">
+          <div>
+            <div className="flex items-center space-x-2 text-blue-600 font-bold">
+              <ShieldCheck className="h-4 w-4" />
+              <span className="uppercase tracking-wider">MANDATORY 8-RULE SAFETY CRITERIA MATRIX</span>
+            </div>
+            <p className="text-[#64748B] text-[11px] mt-0.5 font-sans">
+              Evaluated sequentially against physical hypervisor telemetry before any proposal enters the approval gate.
+            </p>
           </div>
 
-          <div className="rounded-lg border border-[#1C202A] bg-[#0E1015] px-4 py-2.5 text-[#9CA3AF] text-[11px]">
-            PASSED: <span className="text-white font-bold">{passedCount}</span> / <span className="text-white font-bold">{totalCount}</span> CHECKS
+          <div className="flex items-center space-x-2">
+            <span className={`px-3 py-1 rounded-full text-xs font-bold border ${
+              isBlocked
+                ? 'border-red-200 bg-red-50 text-red-700'
+                : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+            }`}>
+              {passedCount} OF {totalCount} CHECKS SATISFIED
+            </span>
           </div>
         </div>
 
-        {/* Machine Reason Callout if Blocked */}
-        {isBlocked && safetyEvaluation?.rejection_reasons && safetyEvaluation.rejection_reasons.length > 0 && (
-          <div className="mt-6 max-w-2xl mx-auto rounded-lg border border-red-500/50 bg-red-950/30 p-4 text-left font-mono">
-            <div className="flex items-center space-x-2 text-red-400 font-bold mb-2 text-xs">
-              <AlertTriangle className="h-4 w-4 shrink-0" />
-              <span>SAFETY GATE VIOLATION CODES:</span>
-            </div>
-            <ul className="space-y-1 text-[11px] text-red-200">
-              {safetyEvaluation.rejection_reasons.map((reason, idx) => (
-                <li key={idx} className="flex items-start space-x-2">
-                  <span className="text-red-400 font-bold shrink-0">›</span>
-                  <span>{reason}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </div>
-
-      {/* 8 Deterministic Checks Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {checksToDisplay.map((check, idx) => {
-          const isCheckPassed = check.passed;
-          const errorCode = ERROR_CODE_MAP[check.check_name] || `ERR_${check.check_name}`;
-
-          return (
-            <div
-              key={check.check_name || idx}
-              className={`rounded-xl border p-5 transition-all relative overflow-hidden ${
-                isCheckPassed
-                  ? 'border-[#1C202A] bg-[#0B0D13] hover:border-[#2A303F]'
-                  : 'border-red-500/70 bg-[#160B0E] shadow-[0_0_20px_rgba(239,68,68,0.2)] ring-1 ring-red-500/30'
-              }`}
-            >
-              {/* Left Accent Bar */}
-              <div className={`absolute left-0 top-0 bottom-0 w-1 ${
-                isCheckPassed ? 'bg-emerald-500/60' : 'bg-red-500'
-              }`} />
-
-              <div className="flex items-start justify-between gap-3 mb-2.5 pl-2">
-                <div>
-                  <div className="flex items-center space-x-2">
-                    {isCheckPassed ? (
-                      <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+        {/* Sequential List of 8 Rules */}
+        <div className="space-y-3">
+          {checksToDisplay.map((check, idx) => {
+            return (
+              <div
+                key={check.check_name}
+                className={`flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-xl border transition-all ${
+                  check.passed
+                    ? 'border-[#E2E8F0] bg-[#F8FAFC] hover:bg-white hover:border-[#CBD5E1]'
+                    : 'border-red-200 bg-red-50/60'
+                }`}
+              >
+                <div className="flex items-start space-x-3.5">
+                  <div className="pt-0.5">
+                    {check.passed ? (
+                      <CheckCircle2 className="h-5 w-5 text-emerald-600" />
                     ) : (
-                      <XCircle className="h-4 w-4 text-red-400 shrink-0 animate-pulse" />
+                      <XCircle className="h-5 w-5 text-red-600" />
                     )}
-                    <span className="font-bold text-white tracking-wide text-xs">
-                      {check.check_name.replace(/_/g, ' ')}
-                    </span>
                   </div>
-                  <div className="text-[10px] text-[#6B7280] mt-0.5 font-mono">
-                    RULE ID: <span className="text-[#9CA3AF]">{check.check_name}</span>
+                  <div>
+                    <div className="flex items-center space-x-2 font-mono">
+                      <span className="text-[10px] text-[#94A3B8] font-bold">RULE 0{idx + 1}</span>
+                      <span className="font-bold text-[#0F172A]">{check.check_name}</span>
+                      <span className="text-[10px] text-[#64748B] font-mono">
+                        {check.metric_value ? `[${check.metric_value}]` : `[${check.severity}]`}
+                      </span>
+                    </div>
+                    <p className="text-xs text-[#475569] mt-1 font-sans">
+                      {check.message}
+                    </p>
                   </div>
                 </div>
 
-                <div className="text-right shrink-0">
-                  <span className={`inline-block px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${
-                    isCheckPassed
-                      ? 'border border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-                      : 'border border-red-500/60 bg-red-500/20 text-red-300 animate-pulse'
+                <div className="mt-3 sm:mt-0 sm:text-right shrink-0">
+                  <span className={`inline-block px-2.5 py-1 rounded-md text-[11px] font-bold ${
+                    check.passed 
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-red-100 text-red-800'
                   }`}>
-                    {isCheckPassed ? 'PASS' : 'FAIL // BLOCKED'}
+                    {check.passed ? 'SATISFIED' : 'BLOCKED'}
                   </span>
+                  {check.metric_value && (
+                    <div className="text-[10px] text-[#64748B] mt-1 font-mono">
+                      {check.metric_value}
+                    </div>
+                  )}
                 </div>
               </div>
-
-              {/* Message Description */}
-              <p className="text-[11px] text-[#9CA3AF] leading-relaxed pl-8 font-sans">
-                {check.message}
-              </p>
-
-              {/* Error Code & Metric Details */}
-              <div className="mt-3 pt-3 border-t border-[#1C202A] pl-8 flex flex-wrap items-center justify-between gap-2 text-[10px]">
-                {!isCheckPassed ? (
-                  <div className="flex items-center space-x-1 text-red-400 font-bold">
-                    <span>REASON CODE:</span>
-                    <span className="rounded bg-red-500/20 px-1.5 py-0.5 border border-red-500/40">
-                      {errorCode}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="flex items-center space-x-1 text-[#6B7280]">
-                    <CheckCircle2 className="h-3 w-3 text-emerald-400" />
-                    <span>VERIFIED BY CONTROL PLANE</span>
-                  </div>
-                )}
-
-                {check.metric_value && (
-                  <div className="text-[#9CA3AF]">
-                    METRIC: <strong className="text-white">{check.metric_value}</strong>
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
     </div>
   );
