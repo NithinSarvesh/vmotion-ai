@@ -385,6 +385,9 @@ class SimulationProvider(BaseVirtualizationProvider):
         vm = self._vms[vm_id]
         if vm.node_id != expected_node:
             return False, f"Placement mismatch: VM '{vm_id}' resides on '{vm.node_id}', expected '{expected_node}'."
+        for nid, node in self._nodes.items():
+            if nid != expected_node and vm_id in node.active_vms:
+                return False, f"Placement conflict: VM '{vm_id}' is still reported on source/other node '{nid}'."
         return True, f"Placement verified: VM '{vm_id}' resides on node '{expected_node}'."
 
     async def verify_vm_health(self, vm_id: str) -> tuple[bool, str]:

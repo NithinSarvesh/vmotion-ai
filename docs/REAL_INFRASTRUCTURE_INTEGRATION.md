@@ -147,7 +147,7 @@ To maintain least-privilege security, VMotion AI must NOT use the root administr
 | **Local Disk Migration Replication** | `POST .../migrate` with `with-local-disks=1` | `Datastore.AllocateSpace` | Allocate target disk blocks on destination datastore. |
 | **Storage Verification** | Queried during migration pre-checks | `Datastore.Audit` | Verify shared or target datastore status. |
 | **Task Progress Polling** | `GET /nodes/{node}/tasks/{upid}/status` | `Sys.Audit` | Poll UPID completion state and exitstatus. |
-| **Guest-Agent Health Check** | `GET .../qemu/{vmid}/agent/ping` (or status) | `VM.GuestAgent.Audit` | Read guest responsiveness via virtio-serial agent. |
+| **Guest-Agent Health Check** | `POST .../qemu/{vmid}/agent/ping` | `VM.GuestAgent.Audit` | Trigger guest responsiveness ping via virtio-serial agent. |
 
 *Note on Deprecated Privileges*: `VM.Monitor` is **not** a valid privilege in Proxmox VE 9.x and has been removed from all documentation.
 

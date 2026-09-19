@@ -51,9 +51,8 @@ async def websocket_telemetry_endpoint(websocket: WebSocket):
             if cluster.connected:
                 rec = ppo_engine.evaluate(cluster)
                 if rec.action_type == "MIGRATE" and rec.vm_id and rec.target_node:
-                    safety_eval = deterministic_safety_gate.evaluate(cluster, rec.vm_id, rec.target_node)
-                    # Automatically track proposal if not already present
-                    migration_mgr.evaluate_and_propose(rec, cluster)
+                    proposal = migration_mgr.evaluate_and_propose(rec, cluster)
+                    safety_eval = proposal.safety_evaluation if proposal else None
 
             # Active tasks & proposals
             active_tasks = [t.model_dump() for t in migration_mgr.active_tasks.values()]

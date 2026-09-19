@@ -19,6 +19,29 @@ from app.providers.base import (
 from app.config import settings
 
 
+def parse_proxmox_upid(upid: str) -> dict[str, str]:
+    """
+    Explicitly validates and parses a Proxmox VE UPID string.
+    Standard format: UPID:<node>:<pid>:<pstart>:<starttime>:<type>:<id>:<user>:
+    Returns empty dict if the string does not match the valid UPID structure.
+    """
+    if not isinstance(upid, str) or not upid.startswith("UPID:"):
+        return {}
+    parts = upid.split(":")
+    # A standard Proxmox UPID has at least 8 parts (or 9 including trailing empty element)
+    if len(parts) < 8:
+        return {}
+    return {
+        "node": parts[1],
+        "pid": parts[2],
+        "pstart": parts[3],
+        "starttime": parts[4],
+        "type": parts[5],
+        "id": parts[6],
+        "user": parts[7]
+    }
+
+
 class ProxmoxVEProvider(BaseVirtualizationProvider):
     def __init__(
         self,
@@ -36,6 +59,11 @@ class ProxmoxVEProvider(BaseVirtualizationProvider):
         self._connected = False
         self._connection_error = None
         self._client: Optional[httpx.AsyncClient] = None
+        # Maps dispatched UPID -> full task context dict:
+        # {"plan_id": str, "vm_id": str, "source_node": str, "target_node": str}
+        self._task_context_map: dict[str, dict[str, str]] = {}
+        # Backwards-compatible alias for target_node tracking:
+        self._task_target_map: dict[str, str] = {}
 
     def update_config(
         self,
@@ -98,13 +126,13 @@ class ProxmoxVEProvider(BaseVirtualizationProvider):
             client = await self._ensure_client()
             resp = await client.get(f"{self.endpoint}/version")
             latency = round((time.perf_counter() - t0) * 1000.0, 2)
-            
+
             if resp.status_code == 200:
                 self._connected = True
                 self._connection_error = None
                 ver_data = resp.json().get("data", {})
                 version_str = f"Proxmox VE {ver_data.get('version', '')} (release: {ver_data.get('release', '')})"
-                
+
                 nodes = await self.discover_nodes()
                 vms = await self.discover_vms()
                 return ProviderConnectionResult(
@@ -219,7 +247,42 @@ class ProxmoxVEProvider(BaseVirtualizationProvider):
             resp = await client.get(f"{self.endpoint}/nodes")
             if resp.status_code != 200:
                 return []
-            
+
+            # --- Cluster quorum status (HEALTHY / UNHEALTHY / UNKNOWN) ---
+            # GET /cluster/status returns a list where type=="cluster" has "quorate" field.
+            quorum_ok = False
+            quorum_status = "UNKNOWN"
+            try:
+                cstatus_resp = await client.get(f"{self.endpoint}/cluster/status")
+                if cstatus_resp.status_code == 200:
+                    cdata = cstatus_resp.json().get("data")
+                    if isinstance(cdata, list):
+                        cluster_entry = next((item for item in cdata if item.get("type") == "cluster"), None)
+                        if cluster_entry is not None and "quorate" in cluster_entry:
+                            q_val = cluster_entry.get("quorate")
+                            if q_val == 1 or q_val is True:
+                                quorum_status = "HEALTHY"
+                                quorum_ok = True
+                            elif q_val == 0 or q_val is False:
+                                quorum_status = "UNHEALTHY"
+                                quorum_ok = False
+                            else:
+                                quorum_status = "UNKNOWN"
+                                quorum_ok = False
+                        else:
+                            # Malformed entry or no quorate field
+                            quorum_status = "UNKNOWN"
+                            quorum_ok = False
+                    else:
+                        quorum_status = "UNKNOWN"
+                        quorum_ok = False
+                else:
+                    quorum_status = "UNKNOWN"
+                    quorum_ok = False
+            except Exception:
+                quorum_status = "UNKNOWN"
+                quorum_ok = False  # Fail-closed: unverified quorum treated as unhealthy
+
             raw_nodes = resp.json().get("data", [])
             nodes = []
             for n in raw_nodes:
@@ -229,7 +292,43 @@ class ProxmoxVEProvider(BaseVirtualizationProvider):
                 mem_total = round(n.get("maxmem", 0) / (1024 * 1024), 1)
                 mem_used = round(n.get("mem", 0) / (1024 * 1024), 1)
                 mem_pct = round((mem_used / max(1.0, mem_total)) * 100.0, 1)
-                
+
+                # --- Per-node storage accessibility (HEALTHY / UNHEALTHY / UNKNOWN) ---
+                # GET /nodes/{node}/storage returns storage pools with "active" and "shared" fields.
+                # shared_storage_accessible is True ONLY if at least one active pool is explicitly marked shared=1.
+                storage_ok = False
+                storage_status = "UNKNOWN"
+                if status == "online":
+                    try:
+                        stor_resp = await client.get(f"{self.endpoint}/nodes/{node_id}/storage")
+                        if stor_resp.status_code == 200:
+                            storages = stor_resp.json().get("data", [])
+                            if isinstance(storages, list):
+                                has_shared_active = any(
+                                    bool(s.get("active", 0)) and bool(s.get("shared", 0))
+                                    for s in storages
+                                )
+                                has_any_active = any(bool(s.get("active", 0)) for s in storages)
+                                if has_any_active:
+                                    storage_status = "HEALTHY"
+                                    storage_ok = has_shared_active
+                                else:
+                                    # No active storage pool on node
+                                    storage_status = "UNHEALTHY"
+                                    storage_ok = False
+                            else:
+                                storage_status = "UNKNOWN"
+                                storage_ok = False
+                        else:
+                            storage_status = "UNKNOWN"
+                            storage_ok = False
+                    except Exception:
+                        storage_status = "UNKNOWN"
+                        storage_ok = False  # Fail-closed: unverified storage = inaccessible
+                else:
+                    storage_status = "UNHEALTHY"
+                    storage_ok = False
+
                 nodes.append(NodeTelemetry(
                     id=node_id,
                     name=f"{node_id}.pve",
@@ -241,8 +340,10 @@ class ProxmoxVEProvider(BaseVirtualizationProvider):
                     ram_percent=mem_pct,
                     disk_total_gb=round(n.get("maxdisk", 0) / (1024 * 1024 * 1024), 1),
                     disk_used_gb=round(n.get("disk", 0) / (1024 * 1024 * 1024), 1),
-                    shared_storage_accessible=True,
-                    quorum_healthy=True
+                    shared_storage_accessible=storage_ok,
+                    quorum_healthy=quorum_ok,
+                    quorum_status=quorum_status,
+                    storage_status=storage_status
                 ))
             return nodes
         except Exception as e:
@@ -258,7 +359,7 @@ class ProxmoxVEProvider(BaseVirtualizationProvider):
             resp = await client.get(f"{self.endpoint}/cluster/resources?type=vm")
             if resp.status_code != 200:
                 return []
-            
+
             raw_vms = resp.json().get("data", [])
             vms = []
             for v in raw_vms:
@@ -330,7 +431,113 @@ class ProxmoxVEProvider(BaseVirtualizationProvider):
                 return v
         return None
 
-    async def validate_migration(self, vm_id: str, target_node: str) -> tuple[bool, str]:
+    async def get_vm_disk_storage_ids(self, source_node: str, vm_id: str) -> tuple[Optional[list[str]], str]:
+        """
+        Queries Proxmox VM configuration (GET /nodes/{source_node}/qemu/{vm_id}/config)
+        to extract the datastore / storage IDs assigned to the VM's disk drives.
+        Returns:
+            (storage_ids, message) where storage_ids is None on failure, or list of unique storage IDs.
+        """
+        try:
+            client = await self._ensure_client()
+            url = f"{self.endpoint}/nodes/{source_node}/qemu/{vm_id}/config"
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                return None, f"Failed to retrieve VM config from Proxmox (HTTP {resp.status_code}: {resp.text[:120]})"
+
+            config_data = resp.json().get("data", {})
+            storage_ids: list[str] = []
+            # Proxmox disk device keys: scsi0..30, virtio0..15, ide0..3, sata0..5, efidisk0
+            disk_prefixes = ("scsi", "virtio", "ide", "sata", "efidisk")
+            for k, v in config_data.items():
+                if isinstance(v, str) and any(k.startswith(p) for p in disk_prefixes):
+                    if ":" in v:
+                        sid = v.split(":", 1)[0].strip()
+                        if sid and sid not in storage_ids:
+                            storage_ids.append(sid)
+            return storage_ids, f"Identified {len(storage_ids)} datastore(s) for VM {vm_id}: {', '.join(storage_ids) if storage_ids else 'none (diskless)'}"
+        except Exception as e:
+            return None, f"Exception querying VM config for {vm_id}: {str(e)}"
+
+    async def verify_migration_storage(
+        self,
+        vm_id: str,
+        source_node: str,
+        target_node: str,
+        with_local_disks: bool = True
+    ) -> tuple[bool, str, str]:
+        """
+        Verifies storage prerequisites for migration:
+        - If with_local_disks=True (Local-disk migration path):
+          Does NOT require shared storage. Verifies that the destination node's
+          storage subsystem is reachable and contains active storage to receive disks.
+        - If with_local_disks=False (Shared-storage migration path):
+          Verifies that every datastore required by the VM's disks exists, is active,
+          and is marked shared=1 on BOTH source and destination nodes.
+        - If hypervisor APIs fail or VM datastores cannot be determined:
+          Fails closed with status 'UNKNOWN' (no guessing).
+
+        Returns:
+            (allowed: bool, status: Literal["HEALTHY", "UNHEALTHY", "UNKNOWN"], details: str)
+        """
+        client = await self._ensure_client()
+
+        # Step 1: Query target node storage
+        try:
+            target_resp = await client.get(f"{self.endpoint}/nodes/{target_node}/storage")
+            if target_resp.status_code != 200:
+                return False, "UNKNOWN", f"Storage API returned HTTP {target_resp.status_code} for target node '{target_node}'."
+            target_storages = {s.get("storage"): s for s in target_resp.json().get("data", [])}
+        except Exception as e:
+            return False, "UNKNOWN", f"Storage API unavailable for target node '{target_node}': {str(e)}"
+
+        # Step 2: Query source node storage
+        try:
+            source_resp = await client.get(f"{self.endpoint}/nodes/{source_node}/storage")
+            if source_resp.status_code != 200:
+                return False, "UNKNOWN", f"Storage API returned HTTP {source_resp.status_code} for source node '{source_node}'."
+            source_storages = {s.get("storage"): s for s in source_resp.json().get("data", [])}
+        except Exception as e:
+            return False, "UNKNOWN", f"Storage API unavailable for source node '{source_node}': {str(e)}"
+
+        # Step 3: Determine VM's required datastores
+        vm_stores, store_msg = await self.get_vm_disk_storage_ids(source_node, vm_id)
+        if vm_stores is None:
+            return False, "UNKNOWN", f"VM datastore cannot be determined: {store_msg}"
+
+        # Step 4: Evaluate according to migration strategy
+        if with_local_disks:
+            # Local-disk migration (--with-local-disks 1)
+            # Local disks are live-mirrored via QEMU NBD stream; does NOT require shared storage.
+            active_target_pools = [s for s in target_storages.values() if bool(s.get("active", 0))]
+            if not active_target_pools:
+                return False, "UNHEALTHY", f"Target node '{target_node}' has no active storage pools to receive local disk mirror."
+            return True, "HEALTHY", f"Local-disk migration supported with --with-local-disks 1 ({len(active_target_pools)} active storage pool(s) on '{target_node}')."
+        else:
+            # Shared-storage migration (without --with-local-disks)
+            # Every datastore used by VM disks MUST be active and marked shared on both source and target.
+            if not vm_stores:
+                return True, "HEALTHY", f"VM '{vm_id}' has no virtual disks; shared storage prerequisite satisfied."
+
+            for ds in vm_stores:
+                src_ds = source_storages.get(ds)
+                tgt_ds = target_storages.get(ds)
+
+                if not src_ds or not bool(src_ds.get("active", 0)):
+                    return False, "UNHEALTHY", f"Datastore '{ds}' required by VM '{vm_id}' is not active on source node '{source_node}'."
+
+                if not tgt_ds:
+                    return False, "UNHEALTHY", f"Datastore '{ds}' required by VM '{vm_id}' is available on source node '{source_node}' but missing on target node '{target_node}'."
+
+                if not bool(tgt_ds.get("active", 0)):
+                    return False, "UNHEALTHY", f"Datastore '{ds}' required by VM '{vm_id}' is inactive on target node '{target_node}'."
+
+                if not bool(src_ds.get("shared", 0)) or not bool(tgt_ds.get("shared", 0)):
+                    return False, "UNHEALTHY", f"Datastore '{ds}' is not marked shared on source or target node; requires local-disk migration (--with-local-disks 1)."
+
+            return True, "HEALTHY", f"Shared datastore(s) {vm_stores} verified active and shared on both '{source_node}' and '{target_node}'."
+
+    async def validate_migration(self, vm_id: str, target_node: str, with_local_disks: bool = True) -> tuple[bool, str]:
         state = await self.collect_telemetry()
         if not state.connected:
             return False, "Proxmox cluster is disconnected."
@@ -338,7 +545,21 @@ class ProxmoxVEProvider(BaseVirtualizationProvider):
             return False, f"VM {vm_id} not found."
         if target_node not in state.nodes:
             return False, f"Target node {target_node} not found."
-        return True, "Proxmox validation passed."
+
+        vm = state.vms[vm_id]
+        if vm.node_id == target_node:
+            return False, f"VM '{vm_id}' is already hosted on target node '{target_node}'."
+
+        allowed, status, reason = await self.verify_migration_storage(
+            vm_id=vm_id,
+            source_node=vm.node_id,
+            target_node=target_node,
+            with_local_disks=with_local_disks
+        )
+        if not allowed:
+            return False, f"Storage validation failed ({status}): {reason}"
+
+        return True, f"Proxmox validation passed ({status}): {reason}"
 
     async def plan_migration(self, vm_id: str, target_node: str, reason: str = "Rebalance") -> MigrationPlan:
         vm = await self.inspect_vm_state(vm_id)
@@ -350,28 +571,61 @@ class ProxmoxVEProvider(BaseVirtualizationProvider):
             source_node=vm.node_id,
             target_node=target_node,
             reason=reason,
-            created_at=time.time()
+            created_at=time.time(),
+            with_local_disks=True
         )
 
     async def execute_migration(self, plan: MigrationPlan) -> str:
         client = await self._ensure_client()
+        with_local = 1 if getattr(plan, "with_local_disks", True) else 0
         payload = {
             "target": plan.target_node,
             "online": 1,
-            "with-local-disks": 1
+            "with-local-disks": with_local
         }
         url = f"{self.endpoint}/nodes/{plan.source_node}/qemu/{plan.vm_id}/migrate"
         resp = await client.post(url, data=payload)
-        
+
         if resp.status_code != 200:
             raise RuntimeError(f"Proxmox migration dispatch failed: HTTP {resp.status_code} - {resp.text}")
-        
+
         upid = resp.json().get("data")
+        # Record migration task context so monitor_migration_task() can propagate exact metadata
+        if upid:
+            self._task_context_map[upid] = {
+                "plan_id": plan.plan_id,
+                "vm_id": plan.vm_id,
+                "source_node": plan.source_node,
+                "target_node": plan.target_node
+            }
+            self._task_target_map[upid] = plan.target_node
         return upid
 
     async def monitor_migration_task(self, task_id: str) -> MigrationTaskStatus:
-        parts = task_id.split(":")
-        node = parts[1] if len(parts) > 1 else "unknown"
+        # 1. Prefer known migration task context established during execute_migration()
+        if task_id in self._task_context_map:
+            ctx = self._task_context_map[task_id]
+            node = ctx["source_node"]
+            target_node = ctx["target_node"]
+            vm_id = ctx["vm_id"]
+            plan_id = ctx["plan_id"]
+        elif task_id in self._task_target_map:
+            # Backwards compatibility for tests directly populating _task_target_map
+            target_node = self._task_target_map[task_id]
+            parsed = parse_proxmox_upid(task_id)
+            node = parsed.get("node", "unknown")
+            vm_id = parsed.get("id", "unknown")
+            plan_id = "pve"
+        else:
+            # External or untracked task: parse validated UPID
+            parsed = parse_proxmox_upid(task_id)
+            node = parsed.get("node", "unknown")
+            vm_id = parsed.get("id", "unknown")
+            target_node = "unknown"
+            plan_id = "external"
+
+        if node == "unknown":
+            raise RuntimeError(f"Cannot query Proxmox task status for '{task_id}': unknown or invalid UPID source node.")
 
         client = await self._ensure_client()
         url = f"{self.endpoint}/nodes/{node}/tasks/{task_id}/status"
@@ -385,13 +639,16 @@ class ProxmoxVEProvider(BaseVirtualizationProvider):
         exitstatus = data.get("exitstatus")
 
         if is_stopped:
+            # Clean up context maps once terminal state is reached
+            self._task_context_map.pop(task_id, None)
+            self._task_target_map.pop(task_id, None)
             if exitstatus == "OK":
                 return MigrationTaskStatus(
                     task_id=task_id,
-                    plan_id="pve",
-                    vm_id=parts[6] if len(parts) > 6 else "unknown",
+                    plan_id=plan_id,
+                    vm_id=vm_id,
                     source_node=node,
-                    target_node="target",
+                    target_node=target_node,
                     state="VERIFIED",
                     progress_percent=100.0,
                     completed_at=time.time(),
@@ -401,10 +658,10 @@ class ProxmoxVEProvider(BaseVirtualizationProvider):
             else:
                 return MigrationTaskStatus(
                     task_id=task_id,
-                    plan_id="pve",
-                    vm_id=parts[6] if len(parts) > 6 else "unknown",
+                    plan_id=plan_id,
+                    vm_id=vm_id,
                     source_node=node,
-                    target_node="target",
+                    target_node=target_node,
                     state="FAILED",
                     progress_percent=100.0,
                     error=f"Task exited with error: {exitstatus}"
@@ -412,10 +669,10 @@ class ProxmoxVEProvider(BaseVirtualizationProvider):
 
         return MigrationTaskStatus(
             task_id=task_id,
-            plan_id="pve",
-            vm_id=parts[6] if len(parts) > 6 else "unknown",
+            plan_id=plan_id,
+            vm_id=vm_id,
             source_node=node,
-            target_node="target",
+            target_node=target_node,
             state="MIGRATING",
             progress_percent=50.0
         )
@@ -424,18 +681,54 @@ class ProxmoxVEProvider(BaseVirtualizationProvider):
         state = await self.collect_telemetry()
         if not state.connected:
             return False, "Cannot verify: cluster disconnected."
-        
+
         vm = state.vms.get(vm_id)
         if not vm:
             return False, f"VM {vm_id} disappeared from inventory post-migration."
         if vm.node_id != expected_node:
             return False, f"Placement mismatch: VM resides on '{vm.node_id}', expected '{expected_node}'."
+        # Verify VM is not still listed on any other node's active list
+        for nid, node in state.nodes.items():
+            if nid != expected_node and vm_id in node.active_vms:
+                return False, f"Placement conflict: VM '{vm_id}' is still reported on source/other node '{nid}'."
         return True, f"Verified: VM {vm_id} is residing on {expected_node}."
 
     async def verify_vm_health(self, vm_id: str) -> tuple[bool, str]:
+        """
+        Verifies post-migration guest health using two independent checks:
+        1. Hypervisor-reported VM status must be 'running'.
+        2. QEMU guest-agent ping: POST /nodes/{node}/qemu/{vmid}/agent/ping
+           This call is an action (POST) per the Proxmox VE REST API specification.
+           A successful 200 response confirms the virtio-serial guest-agent channel
+           is alive and the guest kernel is responsive.
+        Requires the VM.GuestAgent.Audit privilege on the API token.
+        NOTE: This path remains UNVERIFIED on real hardware until a live Proxmox cluster
+              is provisioned and the guest agent is running inside the test VM.
+        """
         vm = await self.inspect_vm_state(vm_id)
         if not vm:
-            return False, f"VM '{vm_id}' not found."
+            return False, f"VM '{vm_id}' not found in cluster inventory."
         if vm.status != "running":
-            return False, f"VM health check failed: status is '{vm.status}', expected 'running'."
-        return True, f"Workload '{vm_id}' is running and healthy."
+            return False, (
+                f"VM health check failed: hypervisor reports status '{vm.status}', expected 'running'."
+            )
+
+        # Guest-agent ping — POST because it triggers an agent action, not a data read.
+        try:
+            client = await self._ensure_client()
+            url = f"{self.endpoint}/nodes/{vm.node_id}/qemu/{vm_id}/agent/ping"
+            resp = await client.post(url)
+            if resp.status_code == 200:
+                return True, (
+                    f"Workload '{vm_id}' is running and guest agent responded to ping "
+                    f"on '{vm.node_id}'."
+                )
+            else:
+                return False, (
+                    f"Guest agent ping failed for VM '{vm_id}' on '{vm.node_id}': "
+                    f"HTTP {resp.status_code} — {resp.text[:200]}"
+                )
+        except Exception as e:
+            return False, (
+                f"Guest agent ping error for VM '{vm_id}' on '{vm.node_id}': {str(e)}"
+            )

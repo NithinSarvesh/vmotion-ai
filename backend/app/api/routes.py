@@ -271,8 +271,8 @@ async def get_recommendation():
     proposal = None
     safety_eval = None
     if rec.action_type == "MIGRATE" and rec.vm_id and rec.target_node:
-        safety_eval = deterministic_safety_gate.evaluate(cluster, rec.vm_id, rec.target_node)
         proposal = migration_mgr.evaluate_and_propose(rec, cluster)
+        safety_eval = proposal.safety_evaluation if proposal else None
 
     return {
         "recommendation": rec,

@@ -54,7 +54,13 @@ class DeterministicSafetyGate:
     def release_lock(self, vm_id: str):
         self._active_migration_locks.discard(vm_id)
 
-    def evaluate(self, cluster: ClusterState, vm_id: str, target_node_id: str) -> SafetyEvaluation:
+    def evaluate(
+        self,
+        cluster: ClusterState,
+        vm_id: str,
+        target_node_id: str,
+        with_local_disks: bool = False
+    ) -> SafetyEvaluation:
         now = time.time()
         results: list[SafetyCheckResult] = []
         rejection_reasons: list[str] = []
@@ -247,30 +253,77 @@ class DeterministicSafetyGate:
 
         # Rule 7: Storage & Cluster Quorum Health
         if target_node:
-            storage_ok = target_node.shared_storage_accessible
             quorum_ok = target_node.quorum_healthy
-            if not storage_ok or not quorum_ok:
-                code = "ERR_STORAGE_OR_QUORUM"
-                msg = f"Cluster quorum or shared storage degraded (Storage: {storage_ok}, Quorum: {quorum_ok})."
-                expl = "Live migration requires shared storage access and cluster quorum consensus."
-                results.append(SafetyCheckResult(
-                    check_name="STORAGE_AND_QUORUM",
-                    passed=False,
-                    code=code,
-                    explanation=expl,
-                    severity="CRITICAL",
-                    message=msg
-                ))
-                rejection_reasons.append(expl)
-                rejection_codes.append(code)
+            q_status = getattr(target_node, "quorum_status", "HEALTHY" if quorum_ok else "UNHEALTHY")
+            s_status = getattr(target_node, "storage_status", "HEALTHY")
+
+            if not with_local_disks:
+                # --- SHARED STORAGE MIGRATION STRATEGY ---
+                # Prerequisite: Destination node must have verified access to active shared datastore.
+                storage_ok = target_node.shared_storage_accessible
+                if not quorum_ok or not storage_ok:
+                    code = "ERR_STORAGE_OR_QUORUM"
+                    msg = f"Cluster quorum or shared storage degraded (Storage: {s_status}, SharedAccessible: {storage_ok}, Quorum: {q_status})."
+                    if q_status == "UNKNOWN" or s_status == "UNKNOWN":
+                        expl = f"Cluster quorum or shared storage state is UNKNOWN / unverified from hypervisor API (Storage: {s_status}, Quorum: {q_status}). Fail-closed policy blocks migration."
+                    elif q_status == "UNHEALTHY":
+                        expl = "Cluster quorum consensus is lost (quorate=0); live migration is blocked to prevent split-brain."
+                    else:
+                        expl = "Live migration requires shared storage access and cluster quorum consensus."
+                    results.append(SafetyCheckResult(
+                        check_name="STORAGE_AND_QUORUM",
+                        passed=False,
+                        code=code,
+                        explanation=expl,
+                        severity="CRITICAL",
+                        message=msg,
+                        metric_value=f"Storage: {s_status}, Shared: {storage_ok}, Quorum: {q_status}"
+                    ))
+                    rejection_reasons.append(expl)
+                    rejection_codes.append(code)
+                else:
+                    results.append(SafetyCheckResult(
+                        check_name="STORAGE_AND_QUORUM",
+                        passed=True,
+                        code="OK_STORAGE_AND_QUORUM",
+                        explanation="Shared datastore accessibility confirmed and cluster quorum consensus verified.",
+                        message="Storage and quorum health verified.",
+                        metric_value=f"Storage: {s_status}, Shared: True, Quorum: {q_status}"
+                    ))
             else:
-                results.append(SafetyCheckResult(
-                    check_name="STORAGE_AND_QUORUM",
-                    passed=True,
-                    code="OK_STORAGE_AND_QUORUM",
-                    explanation="Shared datastore accessibility confirmed and cluster quorum consensus verified.",
-                    message="Storage and quorum health verified."
-                ))
+                # --- LOCAL-DISK MIGRATION STRATEGY (--with-local-disks 1) ---
+                # Prerequisite: Shared storage is NOT required.
+                # Destination node storage must be active (s_status == "HEALTHY") to receive live block mirror.
+                storage_ok = (s_status == "HEALTHY")
+                if not quorum_ok or not storage_ok:
+                    code = "ERR_STORAGE_OR_QUORUM"
+                    msg = f"Cluster quorum or destination storage degraded for local-disk migration (Storage: {s_status}, Quorum: {q_status})."
+                    if q_status == "UNKNOWN" or s_status == "UNKNOWN":
+                        expl = f"Cluster quorum or destination storage state is UNKNOWN / unverified from hypervisor API (Storage: {s_status}, Quorum: {q_status}). Fail-closed policy blocks migration."
+                    elif q_status == "UNHEALTHY":
+                        expl = "Cluster quorum consensus is lost (quorate=0); live migration is blocked to prevent split-brain."
+                    else:
+                        expl = f"Destination compute node '{target_node_id}' has no active storage available for live block mirroring (Storage: {s_status})."
+                    results.append(SafetyCheckResult(
+                        check_name="STORAGE_AND_QUORUM",
+                        passed=False,
+                        code=code,
+                        explanation=expl,
+                        severity="CRITICAL",
+                        message=msg,
+                        metric_value=f"Storage: {s_status}, Strategy: local-disk, Quorum: {q_status}"
+                    ))
+                    rejection_reasons.append(expl)
+                    rejection_codes.append(code)
+                else:
+                    results.append(SafetyCheckResult(
+                        check_name="STORAGE_AND_QUORUM",
+                        passed=True,
+                        code="OK_STORAGE_AND_QUORUM",
+                        explanation="Destination storage verified active for local-disk migration (--with-local-disks 1) and cluster quorum consensus verified.",
+                        message="Storage and quorum health verified for local-disk migration.",
+                        metric_value=f"Storage: {s_status}, Strategy: local-disk, Quorum: {q_status}"
+                    ))
 
         # Rule 8: Conflict Lock & Migration Cooldown
         if vm_id in self._active_migration_locks or (vm and vm.status == "migrating"):

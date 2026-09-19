@@ -239,3 +239,106 @@ async def test_safety_gate_blocks_ai_recommendation_and_logs_loudly():
     assert latest_blocked.target_node == "node-02"
     assert "BLOCKED" in latest_blocked.message
 
+
+# ---------------------------------------------------------------------------
+# STRATEGY-AWARE STORAGE SAFETY TESTS (Requirement 7 a-e)
+# ---------------------------------------------------------------------------
+
+def test_safety_shared_storage_migration_with_shared_datastore_allowed(sample_cluster):
+    """
+    Case 7.a: Shared-storage migration + shared datastore available.
+    MUST be allowed by Rule 7.
+    """
+    gate = DeterministicSafetyGate()
+    sample_cluster.nodes["node-02"].shared_storage_accessible = True
+    sample_cluster.nodes["node-02"].storage_status = "HEALTHY"
+    sample_cluster.nodes["node-02"].quorum_healthy = True
+
+    eval_result = gate.evaluate(sample_cluster, "vm-101", "node-02", with_local_disks=False)
+    storage_check = next(r for r in eval_result.results if r.check_name == "STORAGE_AND_QUORUM")
+
+    assert storage_check.passed is True
+    assert storage_check.code == "OK_STORAGE_AND_QUORUM"
+    assert eval_result.passed is True
+    assert "ERR_STORAGE_OR_QUORUM" not in eval_result.rejection_codes
+
+
+def test_safety_shared_storage_migration_without_shared_datastore_blocked(sample_cluster):
+    """
+    Case 7.b: Shared-storage migration + datastore missing / not shared.
+    MUST be strictly blocked by Rule 7.
+    """
+    gate = DeterministicSafetyGate()
+    sample_cluster.nodes["node-02"].shared_storage_accessible = False
+    sample_cluster.nodes["node-02"].storage_status = "HEALTHY"  # Local storage active, but no shared storage
+    sample_cluster.nodes["node-02"].quorum_healthy = True
+
+    eval_result = gate.evaluate(sample_cluster, "vm-101", "node-02", with_local_disks=False)
+    storage_check = next(r for r in eval_result.results if r.check_name == "STORAGE_AND_QUORUM")
+
+    assert storage_check.passed is False
+    assert storage_check.code == "ERR_STORAGE_OR_QUORUM"
+    assert eval_result.blocked is True
+    assert "ERR_STORAGE_OR_QUORUM" in eval_result.rejection_codes
+
+
+def test_safety_local_disk_migration_with_local_storage_allowed(sample_cluster):
+    """
+    Case 7.c: Local-disk migration + local target storage available + no shared storage.
+    MUST NOT be blocked by the shared-storage requirement.
+    """
+    gate = DeterministicSafetyGate()
+    sample_cluster.nodes["node-02"].shared_storage_accessible = False  # NO shared storage!
+    sample_cluster.nodes["node-02"].storage_status = "HEALTHY"  # Active local storage ready for block mirror!
+    sample_cluster.nodes["node-02"].quorum_healthy = True
+
+    eval_result = gate.evaluate(sample_cluster, "vm-101", "node-02", with_local_disks=True)
+    storage_check = next(r for r in eval_result.results if r.check_name == "STORAGE_AND_QUORUM")
+
+    assert storage_check.passed is True
+    assert storage_check.code == "OK_STORAGE_AND_QUORUM"
+    assert eval_result.passed is True
+    assert "ERR_STORAGE_OR_QUORUM" not in eval_result.rejection_codes
+
+
+def test_safety_local_disk_migration_target_storage_unavailable_blocked(sample_cluster):
+    """
+    Case 7.d: Local-disk migration + destination storage unavailable/inactive.
+    MUST be strictly blocked by Rule 7.
+    """
+    gate = DeterministicSafetyGate()
+    sample_cluster.nodes["node-02"].shared_storage_accessible = False
+    sample_cluster.nodes["node-02"].storage_status = "UNHEALTHY"  # Target storage offline / inactive!
+    sample_cluster.nodes["node-02"].quorum_healthy = True
+
+    eval_result = gate.evaluate(sample_cluster, "vm-101", "node-02", with_local_disks=True)
+    storage_check = next(r for r in eval_result.results if r.check_name == "STORAGE_AND_QUORUM")
+
+    assert storage_check.passed is False
+    assert storage_check.code == "ERR_STORAGE_OR_QUORUM"
+    assert eval_result.blocked is True
+    assert "ERR_STORAGE_OR_QUORUM" in eval_result.rejection_codes
+
+
+def test_safety_unknown_storage_state_fails_closed(sample_cluster):
+    """
+    Case 7.e: Storage state is UNKNOWN (hypervisor storage API unreachable or returned error).
+    MUST fail closed under both shared-storage and local-disk migration strategies.
+    """
+    gate = DeterministicSafetyGate()
+    sample_cluster.nodes["node-02"].shared_storage_accessible = False
+    sample_cluster.nodes["node-02"].storage_status = "UNKNOWN"
+    sample_cluster.nodes["node-02"].quorum_healthy = True
+
+    # Shared migration fails closed on UNKNOWN
+    eval_shared = gate.evaluate(sample_cluster, "vm-101", "node-02", with_local_disks=False)
+    assert eval_shared.blocked is True
+    assert "ERR_STORAGE_OR_QUORUM" in eval_shared.rejection_codes
+
+    # Local-disk migration ALSO fails closed on UNKNOWN
+    eval_local = gate.evaluate(sample_cluster, "vm-101", "node-02", with_local_disks=True)
+    assert eval_local.blocked is True
+    assert "ERR_STORAGE_OR_QUORUM" in eval_local.rejection_codes
+
+    check_local = next(r for r in eval_local.results if r.check_name == "STORAGE_AND_QUORUM")
+    assert "UNKNOWN" in check_local.explanation or "unverified" in check_local.explanation.lower()

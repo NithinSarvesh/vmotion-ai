@@ -23,6 +23,8 @@ class NodeTelemetry(BaseModel):
     disk_used_gb: float = 350.0
     shared_storage_accessible: bool = True
     quorum_healthy: bool = True
+    quorum_status: Literal["HEALTHY", "UNHEALTHY", "UNKNOWN"] = "HEALTHY"
+    storage_status: Literal["HEALTHY", "UNHEALTHY", "UNKNOWN"] = "HEALTHY"
     active_vms: list[str] = Field(default_factory=list)
 
 
@@ -64,6 +66,7 @@ class MigrationPlan(BaseModel):
     created_at: float
     estimated_duration_seconds: float = 12.0
     recommended_by: Literal["AI_PPO", "BASELINE_RULE", "MANUAL"] = "AI_PPO"
+    with_local_disks: bool = True
 
 
 MigrationState = Literal[

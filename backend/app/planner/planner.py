@@ -110,6 +110,7 @@ class PendingProposal(BaseModel):
     engine_type: str
     confidence_score: float
     safety_evaluation: SafetyEvaluation
+    with_local_disks: bool = True
     status: ProposalState = ProposalState.RECOMMENDED
     created_at: float = Field(default_factory=time.time)
     approved_at: Optional[float] = None
@@ -144,9 +145,26 @@ class MigrationManager:
         self.active_tasks: dict[str, MigrationTaskStatus] = {}
         self.completed_tasks: list[MigrationTaskStatus] = []
 
-    def evaluate_and_propose(self, rec: Recommendation, cluster: ClusterState) -> Optional[PendingProposal]:
+    def evaluate_and_propose(
+        self,
+        rec: Recommendation,
+        cluster: ClusterState,
+        with_local_disks: Optional[bool] = None
+    ) -> Optional[PendingProposal]:
         if rec.action_type != "MIGRATE" or not rec.vm_id or not rec.target_node:
             return None
+
+        # Determine migration strategy: explicit parameter > recommendation attribute > cluster auto-detect
+        target_node = cluster.nodes.get(rec.target_node)
+        if with_local_disks is not None:
+            effective_with_local = with_local_disks
+        elif hasattr(rec, "with_local_disks") and getattr(rec, "with_local_disks") is not None:
+            effective_with_local = bool(getattr(rec, "with_local_disks"))
+        else:
+            # Auto-detect from cluster topology:
+            # If target node has shared storage accessible, use shared storage migration (with_local_disks=False).
+            # If target node lacks shared storage, select local-disk migration (with_local_disks=True).
+            effective_with_local = not bool(target_node.shared_storage_accessible if target_node else False)
 
         # Check if an identical proposal is already pending or actively executing
         active_states = {
@@ -174,6 +192,7 @@ class MigrationManager:
             reason=rec.reason,
             engine_type=rec.engine_type,
             confidence_score=rec.confidence_score,
+            with_local_disks=effective_with_local,
             safety_evaluation=SafetyEvaluation(
                 vm_id=rec.vm_id,
                 source_node=rec.source_node or "unknown",
@@ -197,15 +216,21 @@ class MigrationManager:
                 "proposal_id": proposal_id,
                 "engine_type": rec.engine_type,
                 "confidence": rec.confidence_score,
-                "metrics": rec.metrics_summary
+                "metrics": rec.metrics_summary,
+                "with_local_disks": effective_with_local
             }
         )
 
         # Step 2: Transition to SAFETY_CHECK
         proposal.transition_to(ProposalState.SAFETY_CHECK, "Commencing deterministic safety gate evaluation")
 
-        # Run Deterministic Safety Gate
-        safety_eval = self.safety_gate.evaluate(cluster, rec.vm_id, rec.target_node)
+        # Run Deterministic Safety Gate with the determined migration strategy
+        safety_eval = self.safety_gate.evaluate(
+            cluster,
+            rec.vm_id,
+            rec.target_node,
+            with_local_disks=effective_with_local
+        )
         proposal.safety_evaluation = safety_eval
 
         audit_logger.log_event(
@@ -273,7 +298,8 @@ class MigrationManager:
             target_node=proposal.target_node,
             reason=proposal.reason,
             created_at=time.time(),
-            recommended_by="AI_PPO" if "PPO" in proposal.engine_type else "BASELINE_RULE"
+            recommended_by="AI_PPO" if "PPO" in proposal.engine_type else "BASELINE_RULE",
+            with_local_disks=getattr(proposal, "with_local_disks", True)
         )
 
         # State transition: APPROVED -> DISPATCHED
