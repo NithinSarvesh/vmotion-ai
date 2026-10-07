@@ -226,6 +226,19 @@ export interface PPOModelHealth {
   last_inference_latency_ms?: number;
 }
 
+export interface AgentSessionInfo {
+  host_id: string;
+  hostname: string;
+  status: 'online' | 'offline';
+  tailscale_ip?: string | null;
+  vbox_version?: string | null;
+  agent_version?: string | null;
+  connected_at: number;
+  last_heartbeat_at: number;
+  latency_ms?: number | null;
+  has_telemetry: boolean;
+}
+
 export interface TelemetryPulsePayload {
   type: 'TELEMETRY_PULSE';
   timestamp: number;
@@ -238,12 +251,13 @@ export interface TelemetryPulsePayload {
   active_tasks: MigrationTaskStatus[];
   completed_tasks: MigrationTaskStatus[];
   audit_entries: AuditEntry[];
+  agents?: AgentSessionInfo[];
 }
 
 export type ConnectionStatus = 'CONNECTED' | 'AUTHENTICATION_ERROR' | 'DISCONNECTED' | 'UNAVAILABLE';
 
 export interface ProviderConnectionResult {
-  provider: 'simulation' | 'proxmox' | 'libvirt';
+  provider: 'simulation' | 'virtualbox' | 'proxmox' | 'libvirt';
   status: ConnectionStatus;
   latency_ms?: number | null;
   hypervisor_version?: string | null;
@@ -253,17 +267,44 @@ export interface ProviderConnectionResult {
   details?: Record<string, any> | null;
 }
 
+export interface VirtualBoxConfig {
+  vbox_path: string;
+  host_a_url: string;
+  host_b_url: string;
+  teleport_port: number;
+  shared_storage_path: string;
+  demo_vm_name: string;
+}
+
+export interface CompatibilityItem {
+  item: string;
+  source: string;
+  target: string;
+  compatible: boolean;
+}
+
+export interface VirtualBoxCompatibilityResult {
+  vm_id: string;
+  target_node: string;
+  all_compatible: boolean;
+  checks: CompatibilityItem[];
+  teleport_port: number;
+  shared_storage_verified: boolean;
+  status: string;
+}
+
 export interface ClusterConfig {
-  provider_type: 'simulation' | 'proxmox' | 'libvirt';
+  provider_type: 'simulation' | 'virtualbox' | 'proxmox' | 'libvirt';
   is_live: boolean;
-  proxmox: {
+  virtualbox?: VirtualBoxConfig;
+  proxmox?: {
     endpoint: string;
     user: string;
     token_id: string;
     token_secret_configured: boolean;
     verify_ssl: boolean;
   };
-  libvirt: {
+  libvirt?: {
     uri: string;
   };
 }

@@ -8,7 +8,8 @@ import type {
   AuditEntry,
   TelemetryPulsePayload,
   AggregatedClusterTelemetry,
-  PPOModelHealth
+  PPOModelHealth,
+  AgentSessionInfo
 } from '../types';
 
 export function useWebSocketTelemetry() {
@@ -21,6 +22,7 @@ export function useWebSocketTelemetry() {
   const [activeTasks, setActiveTasks] = useState<MigrationTaskStatus[]>([]);
   const [completedTasks, setCompletedTasks] = useState<MigrationTaskStatus[]>([]);
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
+  const [agents, setAgents] = useState<AgentSessionInfo[]>([]);
   const [wsConnected, setWsConnected] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,13 +31,14 @@ export function useWebSocketTelemetry() {
 
   const fetchRestState = useCallback(async () => {
     try {
-      const [clusterRes, telemetryRes, healthRes, aiRes, tasksRes, auditRes] = await Promise.all([
-        fetch('/api/cluster/state').then((r) => r.ok ? r.json() : null),
-        fetch('/api/cluster/telemetry').then((r) => r.ok ? r.json() : null),
-        fetch('/api/ai/model/health').then((r) => r.ok ? r.json() : null),
-        fetch('/api/ai/recommendation').then((r) => r.ok ? r.json() : null),
-        fetch('/api/migrations/tasks').then((r) => r.ok ? r.json() : null),
-        fetch('/api/audit/logs?limit=25').then((r) => r.ok ? r.json() : null)
+      const [clusterRes, telemetryRes, healthRes, aiRes, tasksRes, auditRes, agentsRes] = await Promise.all([
+        fetch('/api/cluster/state').then((r) => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/cluster/telemetry').then((r) => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/ai/model/health').then((r) => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/ai/recommendation').then((r) => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/migrations/tasks').then((r) => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/audit/logs?limit=25').then((r) => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/gateway/agents').then((r) => r.ok ? r.json() : null).catch(() => null)
       ]);
 
       if (clusterRes) setCluster(clusterRes);
@@ -53,6 +56,9 @@ export function useWebSocketTelemetry() {
       if (auditRes) {
         setAuditEntries(auditRes);
       }
+      if (agentsRes && agentsRes.agents) {
+        setAgents(agentsRes.agents);
+      }
       setError(null);
     } catch (err: any) {
       setError(err.message || 'Failed to reach VMotion AI backend');
@@ -63,7 +69,8 @@ export function useWebSocketTelemetry() {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.hostname}:8000/ws/telemetry`;
+    const envWsUrl = (import.meta as any).env?.VITE_WS_URL;
+    const wsUrl = envWsUrl || `${protocol}//${window.location.host}/ws/telemetry`;
 
     try {
       const ws = new WebSocket(wsUrl);
@@ -87,6 +94,9 @@ export function useWebSocketTelemetry() {
             setActiveTasks(payload.active_tasks || []);
             setCompletedTasks(payload.completed_tasks || []);
             setAuditEntries(payload.audit_entries || []);
+            if (payload.agents) {
+              setAgents(payload.agents);
+            }
           }
         } catch {
           // ignore
@@ -182,7 +192,7 @@ export function useWebSocketTelemetry() {
     }
   };
 
-  const switchProviderMode = async (providerType: 'simulation' | 'proxmox' | 'libvirt') => {
+  const switchProviderMode = async (providerType: 'simulation' | 'virtualbox' | 'proxmox' | 'libvirt') => {
     try {
       const res = await fetch('/api/cluster/mode', {
         method: 'POST',
@@ -215,6 +225,7 @@ export function useWebSocketTelemetry() {
     activeTasks,
     completedTasks,
     auditEntries,
+    agents,
     wsConnected,
     error,
     actions: {

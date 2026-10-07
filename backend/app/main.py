@@ -28,9 +28,12 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+import os
+from fastapi.staticfiles import StaticFiles
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.CORS_ORIGINS if settings.CORS_ORIGINS else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -38,6 +41,17 @@ app.add_middleware(
 
 app.include_router(router)
 app.include_router(ws_router)
+
+# Mount frontend production build if enabled and present
+frontend_dist_paths = [
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist")),
+    os.path.abspath("frontend/dist"),
+    os.path.abspath("/app/frontend/dist"),
+]
+dist_dir = next((p for p in frontend_dist_paths if os.path.exists(p) and os.path.isdir(p)), None)
+
+if settings.SERVE_FRONTEND and dist_dir:
+    app.mount("/", StaticFiles(directory=dist_dir, html=True), name="frontend")
 
 
 if __name__ == "__main__":

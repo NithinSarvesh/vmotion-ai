@@ -98,7 +98,7 @@ class MigrationTaskStatus(BaseModel):
 
 
 class ProviderConnectionResult(BaseModel):
-    provider: Literal["simulation", "proxmox", "libvirt"]
+    provider: Literal["simulation", "virtualbox", "proxmox", "libvirt"]
     status: Literal["CONNECTED", "AUTHENTICATION_ERROR", "DISCONNECTED", "UNAVAILABLE"]
     latency_ms: Optional[float] = None
     hypervisor_version: Optional[str] = None

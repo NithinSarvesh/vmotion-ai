@@ -14,21 +14,28 @@ class Settings(BaseSettings):
     # Operational Mode: 'live' or 'simulation'
     MODE: Literal["live", "simulation"] = "simulation"
     
-    # Provider Selection: 'simulation', 'proxmox', 'libvirt'
-    PROVIDER_TYPE: Literal["simulation", "proxmox", "libvirt"] = "simulation"
+    # Provider Selection: 'simulation', 'virtualbox', 'proxmox', 'libvirt'
+    PROVIDER_TYPE: Literal["simulation", "virtualbox", "proxmox", "libvirt"] = "simulation"
     
     # Safety & Governance Gates
     ENABLE_HUMAN_APPROVAL: bool = True       # Mandatory: AI cannot execute without human approval
     ENABLE_AUTONOMOUS_MODE: bool = False     # Strictly false by default
     
-    # Proxmox VE Connection Parameters
+    # Oracle VirtualBox Live Teleportation Parameters
+    VBOX_MANAGE_PATH: str = r"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
+    VBOX_HOST_A_URL: str = "http://127.0.0.1:8001"
+    VBOX_HOST_B_URL: str = "http://192.168.1.101:8001"
+    VBOX_AGENT_SECRET: str = "vmotion-vbox-secret"
+    VBOX_TELEPORT_PORT: int = 60050
+    VBOX_SHARED_STORAGE_PATH: str = ""
+    VBOX_DEMO_VM_NAME: str = "DemoVM"
+
+    # Optional Legacy Parameters
     PROXMOX_ENDPOINT: str = "https://192.168.1.100:8006/api2/json"
     PROXMOX_USER: str = "root@pam"
     PROXMOX_TOKEN_ID: str = "vmotion"
     PROXMOX_TOKEN_SECRET: str = ""
     PROXMOX_VERIFY_SSL: bool = False
-    
-    # Libvirt / KVM Connection Parameters
     LIBVIRT_URI: str = "qemu+ssh://root@192.168.1.100/system"
     
     # Safety Gate Deterministic Thresholds
@@ -43,6 +50,14 @@ class Settings(BaseSettings):
 
     # Operator Authentication Key for Control Plane Configuration Updates
     OPERATOR_API_KEY: str = "vmotion-operator-key-default"
+    
+    # Cloud Agent Gateway Parameters (WSS Outbound Agents)
+    GATEWAY_AGENT_TOKEN: str = "vmotion-vbox-secret"
+    AGENT_HEARTBEAT_TIMEOUT_SECONDS: float = 10.0
+    CORS_ORIGINS: str = "*"
+    SERVE_FRONTEND: bool = True
+    HOST_A_ID: str = "vbox-host-a"
+    HOST_B_ID: str = "vbox-host-b"
     
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

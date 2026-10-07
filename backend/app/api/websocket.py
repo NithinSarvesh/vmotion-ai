@@ -9,6 +9,8 @@ from typing import Set
 
 from app.api.routes import get_active_provider, migration_mgr, ppo_engine, deterministic_safety_gate, telemetry_engine
 from app.audit.logger import audit_logger
+from app.gateway.agent_gateway import agent_gateway
+from app.config import settings
 
 ws_router = APIRouter()
 
@@ -59,6 +61,7 @@ async def websocket_telemetry_endpoint(websocket: WebSocket):
             completed_tasks = [t.model_dump() for t in migration_mgr.completed_tasks[:10]]
             proposals = [p.model_dump() for p in migration_mgr.proposals.values()]
             audit_entries = [e.model_dump() for e in audit_logger.get_entries(limit=15)]
+            active_agents = agent_gateway.list_agents()
 
             payload = {
                 "type": "TELEMETRY_PULSE",
@@ -71,7 +74,8 @@ async def websocket_telemetry_endpoint(websocket: WebSocket):
                 "proposals": proposals,
                 "active_tasks": active_tasks,
                 "completed_tasks": completed_tasks,
-                "audit_entries": audit_entries
+                "audit_entries": audit_entries,
+                "agents": active_agents
             }
 
             await websocket.send_text(json.dumps(payload))
@@ -80,3 +84,83 @@ async def websocket_telemetry_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
     except Exception:
         manager.disconnect(websocket)
+
+
+@ws_router.websocket("/ws/agent")
+async def websocket_agent_gateway_endpoint(
+    websocket: WebSocket,
+    host_id: str = "vbox-host-unknown",
+    token: str = ""
+):
+    """
+    Dedicated Cloud Agent Gateway endpoint.
+    Remote physical host agents connect via persistent outbound WSS.
+    Validates agent secret token, handles registration, telemetry ingestion,
+    heartbeats, and command dispatch/response routing.
+    """
+    # 1. Authenticate token
+    expected_token = settings.GATEWAY_AGENT_TOKEN
+    provided_token = token or websocket.headers.get("X-Agent-Secret", "")
+    if expected_token and provided_token != expected_token:
+        await websocket.close(code=4001, reason="Unauthorized: Invalid agent secret token")
+        return
+
+    await websocket.accept()
+    registered_host_id = host_id
+
+    try:
+        while True:
+            packet = await websocket.receive_json()
+            packet_type = packet.get("type", "").upper()
+
+            if packet_type == "REGISTER":
+                registered_host_id = packet.get("host_id", host_id)
+                hostname = packet.get("hostname", registered_host_id)
+                tailscale_ip = packet.get("tailscale_ip")
+                vbox_ver = packet.get("vbox_version")
+                agent_ver = packet.get("agent_version")
+
+                await agent_gateway.register_agent(
+                    host_id=registered_host_id,
+                    websocket=websocket,
+                    hostname=hostname,
+                    tailscale_ip=tailscale_ip,
+                    vbox_version=vbox_ver,
+                    agent_version=agent_ver
+                )
+                await websocket.send_json({
+                    "type": "REGISTERED",
+                    "host_id": registered_host_id,
+                    "status": "ONLINE",
+                    "timestamp": asyncio.get_event_loop().time()
+                })
+
+            elif packet_type == "HEARTBEAT":
+                agent_gateway.record_heartbeat(registered_host_id)
+                await websocket.send_json({
+                    "type": "HEARTBEAT_ACK",
+                    "timestamp": asyncio.get_event_loop().time()
+                })
+
+            elif packet_type == "TELEMETRY":
+                telemetry_data = packet.get("data", packet)
+                agent_gateway.record_telemetry(registered_host_id, telemetry_data)
+
+            elif packet_type == "COMMAND_RESPONSE":
+                correlation_id = packet.get("correlation_id", "")
+                status = packet.get("status", "SUCCESS")
+                data = packet.get("data")
+                err = packet.get("error")
+                agent_gateway.handle_command_response(
+                    host_id=registered_host_id,
+                    correlation_id=correlation_id,
+                    status=status,
+                    data=data,
+                    error=err
+                )
+
+    except WebSocketDisconnect:
+        await agent_gateway.unregister_agent(registered_host_id, websocket)
+    except Exception as e:
+        await agent_gateway.unregister_agent(registered_host_id, websocket)
+

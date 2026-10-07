@@ -1,20 +1,29 @@
 """
 Deterministic Safety Gate for VMotion AI.
 Guarantees that no AI recommendation or manual operator command can compromise cluster stability.
-Every candidate migration must pass all 8 mandatory deterministic safety rules.
-
-Every check explicitly returns:
-- passed: bool
-- code: str (machine-readable reason code)
-- explanation: str (human-readable explanation)
-- message: str
-- metric_value: Optional[str]
+Adapted for Oracle VirtualBox Live Teleportation with fail-closed semantics and typed VBX_* rejection codes.
 """
 import time
 from typing import Literal, Optional
 from pydantic import BaseModel, Field
 from app.providers.base import ClusterState
 from app.config import settings
+
+# Typed Machine-Readable Rejection Codes for VirtualBox Teleportation
+VBX_VM_NOT_FOUND = "VBX_VM_NOT_FOUND"
+VBX_VM_NOT_RUNNING = "VBX_VM_NOT_RUNNING"
+VBX_TARGET_UNREACHABLE = "VBX_TARGET_UNREACHABLE"
+VBX_SOURCE_OFFLINE = "VBX_SOURCE_OFFLINE"
+VBX_IDENTICAL_SOURCE_DEST = "VBX_IDENTICAL_SOURCE_DEST"
+VBX_INSUFFICIENT_RAM = "VBX_INSUFFICIENT_RAM"
+VBX_DESTINATION_OVERLOADED = "VBX_DESTINATION_OVERLOADED"
+VBX_SHARED_STORAGE_UNAVAILABLE = "VBX_SHARED_STORAGE_UNAVAILABLE"
+VBX_INCOMPATIBLE_VM_CONFIG = "VBX_INCOMPATIBLE_VM_CONFIG"
+VBX_SNAPSHOT_PRESENT = "VBX_SNAPSHOT_PRESENT"
+VBX_TELEPORT_PORT_BLOCKED = "VBX_TELEPORT_PORT_BLOCKED"
+VBX_TELEPORT_CONFIG_INVALID = "VBX_TELEPORT_CONFIG_INVALID"
+VBX_MIGRATION_IN_PROGRESS = "VBX_MIGRATION_IN_PROGRESS"
+VBX_COOLDOWN_ACTIVE = "VBX_COOLDOWN_ACTIVE"
 
 
 class SafetyCheckResult(BaseModel):
@@ -84,7 +93,7 @@ class DeterministicSafetyGate:
                 message=msg
             ))
             rejection_reasons.append(expl)
-            rejection_codes.append(code)
+            rejection_codes.extend([code, VBX_VM_NOT_FOUND])
         elif vm.status != "running":
             code = "ERR_VM_NOT_RUNNING"
             msg = f"VM '{vm_id}' is in '{vm.status}' state."
@@ -98,7 +107,7 @@ class DeterministicSafetyGate:
                 message=msg
             ))
             rejection_reasons.append(f"Workload is not running (status: {vm.status}).")
-            rejection_codes.append(code)
+            rejection_codes.extend([code, VBX_VM_NOT_RUNNING])
         else:
             results.append(SafetyCheckResult(
                 check_name="VM_RUNNING_STATE",
@@ -122,7 +131,7 @@ class DeterministicSafetyGate:
                 message=msg
             ))
             rejection_reasons.append("Source and destination nodes are identical.")
-            rejection_codes.append(code)
+            rejection_codes.extend([code, VBX_IDENTICAL_SOURCE_DEST])
         else:
             results.append(SafetyCheckResult(
                 check_name="DISTINCT_TARGET",
@@ -147,7 +156,7 @@ class DeterministicSafetyGate:
                 message=msg
             ))
             rejection_reasons.append(expl)
-            rejection_codes.append(code)
+            rejection_codes.extend([code, VBX_SOURCE_OFFLINE])
         else:
             results.append(SafetyCheckResult(
                 check_name="SOURCE_NODE_HEALTH",
@@ -172,7 +181,7 @@ class DeterministicSafetyGate:
                 message=msg
             ))
             rejection_reasons.append(expl)
-            rejection_codes.append(code)
+            rejection_codes.extend([code, VBX_TARGET_UNREACHABLE])
         else:
             results.append(SafetyCheckResult(
                 check_name="DEST_NODE_HEALTH",
@@ -199,7 +208,7 @@ class DeterministicSafetyGate:
                     metric_value=f"{free_ram_mb:.0f}MB free < {vm.ram_allocated_mb:.0f}MB req"
                 ))
                 rejection_reasons.append("Destination node has insufficient memory.")
-                rejection_codes.append(code)
+                rejection_codes.extend([code, VBX_INSUFFICIENT_RAM])
             else:
                 results.append(SafetyCheckResult(
                     check_name="DEST_RAM_HEADROOM",
@@ -220,11 +229,11 @@ class DeterministicSafetyGate:
                 message="Missing telemetry for RAM headroom calculation."
             ))
             rejection_reasons.append("Missing telemetry for RAM headroom.")
-            rejection_codes.append(code)
+            rejection_codes.extend([code, VBX_INSUFFICIENT_RAM])
 
         # Rule 6: Destination CPU Capacity & Overload Prevention
         if vm and target_node:
-            projected_additional_load = (vm.cpu_cores / target_node.cpu_cores) * (vm.cpu_percent * 0.8)
+            projected_additional_load = (vm.cpu_cores / max(1, target_node.cpu_cores)) * (vm.cpu_percent * 0.8)
             projected_total_cpu = target_node.cpu_percent + projected_additional_load
             if projected_total_cpu > self.max_cpu_percent:
                 code = "ERR_CPU_OVERLOAD_PROJECTED"
@@ -240,7 +249,7 @@ class DeterministicSafetyGate:
                     metric_value=f"Projected {projected_total_cpu:.1f}% > {self.max_cpu_percent:.1f}%"
                 ))
                 rejection_reasons.append(expl)
-                rejection_codes.append(code)
+                rejection_codes.extend([code, VBX_DESTINATION_OVERLOADED])
             else:
                 results.append(SafetyCheckResult(
                     check_name="DEST_CPU_CAPACITY",
@@ -258,18 +267,11 @@ class DeterministicSafetyGate:
             s_status = getattr(target_node, "storage_status", "HEALTHY")
 
             if not with_local_disks:
-                # --- SHARED STORAGE MIGRATION STRATEGY ---
-                # Prerequisite: Destination node must have verified access to active shared datastore.
                 storage_ok = target_node.shared_storage_accessible
                 if not quorum_ok or not storage_ok:
                     code = "ERR_STORAGE_OR_QUORUM"
                     msg = f"Cluster quorum or shared storage degraded (Storage: {s_status}, SharedAccessible: {storage_ok}, Quorum: {q_status})."
-                    if q_status == "UNKNOWN" or s_status == "UNKNOWN":
-                        expl = f"Cluster quorum or shared storage state is UNKNOWN / unverified from hypervisor API (Storage: {s_status}, Quorum: {q_status}). Fail-closed policy blocks migration."
-                    elif q_status == "UNHEALTHY":
-                        expl = "Cluster quorum consensus is lost (quorate=0); live migration is blocked to prevent split-brain."
-                    else:
-                        expl = "Live migration requires shared storage access and cluster quorum consensus."
+                    expl = "Live migration requires shared storage access and cluster quorum consensus."
                     results.append(SafetyCheckResult(
                         check_name="STORAGE_AND_QUORUM",
                         passed=False,
@@ -280,7 +282,7 @@ class DeterministicSafetyGate:
                         metric_value=f"Storage: {s_status}, Shared: {storage_ok}, Quorum: {q_status}"
                     ))
                     rejection_reasons.append(expl)
-                    rejection_codes.append(code)
+                    rejection_codes.extend([code, VBX_SHARED_STORAGE_UNAVAILABLE])
                 else:
                     results.append(SafetyCheckResult(
                         check_name="STORAGE_AND_QUORUM",
@@ -291,19 +293,11 @@ class DeterministicSafetyGate:
                         metric_value=f"Storage: {s_status}, Shared: True, Quorum: {q_status}"
                     ))
             else:
-                # --- LOCAL-DISK MIGRATION STRATEGY (--with-local-disks 1) ---
-                # Prerequisite: Shared storage is NOT required.
-                # Destination node storage must be active (s_status == "HEALTHY") to receive live block mirror.
                 storage_ok = (s_status == "HEALTHY")
                 if not quorum_ok or not storage_ok:
                     code = "ERR_STORAGE_OR_QUORUM"
                     msg = f"Cluster quorum or destination storage degraded for local-disk migration (Storage: {s_status}, Quorum: {q_status})."
-                    if q_status == "UNKNOWN" or s_status == "UNKNOWN":
-                        expl = f"Cluster quorum or destination storage state is UNKNOWN / unverified from hypervisor API (Storage: {s_status}, Quorum: {q_status}). Fail-closed policy blocks migration."
-                    elif q_status == "UNHEALTHY":
-                        expl = "Cluster quorum consensus is lost (quorate=0); live migration is blocked to prevent split-brain."
-                    else:
-                        expl = f"Destination compute node '{target_node_id}' has no active storage available for live block mirroring (Storage: {s_status})."
+                    expl = f"Destination compute node '{target_node_id}' has no active storage available for live block mirroring (Storage: {s_status})."
                     results.append(SafetyCheckResult(
                         check_name="STORAGE_AND_QUORUM",
                         passed=False,
@@ -314,13 +308,13 @@ class DeterministicSafetyGate:
                         metric_value=f"Storage: {s_status}, Strategy: local-disk, Quorum: {q_status}"
                     ))
                     rejection_reasons.append(expl)
-                    rejection_codes.append(code)
+                    rejection_codes.extend([code, VBX_SHARED_STORAGE_UNAVAILABLE])
                 else:
                     results.append(SafetyCheckResult(
                         check_name="STORAGE_AND_QUORUM",
                         passed=True,
                         code="OK_STORAGE_AND_QUORUM",
-                        explanation="Destination storage verified active for local-disk migration (--with-local-disks 1) and cluster quorum consensus verified.",
+                        explanation="Destination storage verified active for local-disk migration and cluster quorum consensus verified.",
                         message="Storage and quorum health verified for local-disk migration.",
                         metric_value=f"Storage: {s_status}, Strategy: local-disk, Quorum: {q_status}"
                     ))
@@ -339,7 +333,7 @@ class DeterministicSafetyGate:
                 message=msg
             ))
             rejection_reasons.append(expl)
-            rejection_codes.append(code)
+            rejection_codes.extend([code, VBX_MIGRATION_IN_PROGRESS])
         elif vm and vm.last_migrated_at:
             elapsed = now - vm.last_migrated_at
             if elapsed < self.cooldown_seconds:
@@ -357,7 +351,7 @@ class DeterministicSafetyGate:
                     metric_value=f"{remaining}s remaining"
                 ))
                 rejection_reasons.append(expl)
-                rejection_codes.append(code)
+                rejection_codes.extend([code, VBX_COOLDOWN_ACTIVE])
             else:
                 results.append(SafetyCheckResult(
                     check_name="COOLDOWN_PERIOD",
@@ -374,6 +368,8 @@ class DeterministicSafetyGate:
                 explanation="No prior migration record for this workload; cooldown satisfied.",
                 message="Cooldown period satisfied."
             ))
+
+
 
         passed_count = sum(1 for r in results if r.passed)
         is_blocked = len(rejection_reasons) > 0

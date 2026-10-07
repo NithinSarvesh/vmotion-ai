@@ -3,6 +3,7 @@ import Lenis from 'lenis';
 import { useWebSocketTelemetry } from './hooks/useWebSocketTelemetry';
 import { Header } from './components/Header';
 import { HeroSection } from './components/HeroSection';
+import { LiveDemoSection } from './components/LiveDemoSection';
 import { TopologyCanvas } from './components/TopologyCanvas';
 import { AiDecisionSection } from './components/AiDecisionSection';
 import { SafetyGateSection } from './components/SafetyGateSection';
@@ -24,6 +25,7 @@ export function App() {
     activeTasks,
     completedTasks,
     auditEntries,
+    agents,
     wsConnected,
     actions
   } = useWebSocketTelemetry();
@@ -51,7 +53,7 @@ export function App() {
 
   // Scroll spy to keep activeSection in sync with scroll position
   useEffect(() => {
-    const sectionIds = ['overview', 'topology', 'ai-engine', 'safety', 'migrations', 'audit'];
+    const sectionIds = ['overview', 'live-demo', 'topology', 'ai-engine', 'safety', 'migrations', 'audit'];
     const handleScroll = () => {
       const scrollPosition = window.scrollY + 220;
       for (let i = sectionIds.length - 1; i >= 0; i--) {
@@ -100,6 +102,22 @@ export function App() {
             proposals={proposals}
             onNavigateSection={handleNavigateSection}
             onTriggerAi={actions.refresh}
+          />
+        </section>
+
+        {/* Section: Live Oracle VirtualBox Teleportation Centerpiece */}
+        <section id="section-live-demo" className="scroll-mt-20 pt-6">
+          <LiveDemoSection
+            cluster={cluster}
+            recommendation={recommendation}
+            safetyEval={safetyEvaluation}
+            proposals={proposals}
+            activeTasks={activeTasks}
+            completedTasks={completedTasks}
+            agents={agents}
+            onApprove={actions.approveProposal}
+            onReject={actions.rejectProposal}
+            isProcessing={false}
           />
         </section>
 

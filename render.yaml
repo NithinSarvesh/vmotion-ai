@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: vmotion-ai-control-plane
+    env: docker
+    dockerfilePath: Dockerfile
+    plan: standard
+    region: oregon
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: MODE
+        value: virtualbox
+      - key: SERVE_FRONTEND
+        value: true
+      - key: GATEWAY_AGENT_TOKEN
+        generateValue: true
+      - key: OPERATOR_API_KEY
+        generateValue: true
+      - key: AGENT_HEARTBEAT_TIMEOUT_SECONDS
+        value: 15.0
+      - key: HOST_A_ID
+        value: vbox-host-a
+      - key: HOST_B_ID
+        value: vbox-host-b
+      - key: VBOX_TELEPORT_PORT
+        value: 60050
+      - key: VBOX_DEMO_VM_NAME
+        value: DemoVM
+      - key: PPO_MODEL_PATH
+        value: models/ppo_v5_final.zip

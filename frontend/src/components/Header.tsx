@@ -37,6 +37,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   const navItems = [
     { id: 'overview', label: '01 INTRO' },
+    { id: 'live-demo', label: '★ LIVE DEMO' },
     { id: 'topology', label: '02 FABRIC' },
     { id: 'ai-engine', label: '03 AI ENGINE' },
     { id: 'safety', label: '04 SAFETY' },
@@ -82,7 +83,7 @@ export const Header: React.FC<HeaderProps> = ({
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-red-600" />
                 </span>
-                <span className="font-semibold">LIVE / PROXMOX · DISCONNECTED</span>
+                <span className="font-semibold">LIVE INFRASTRUCTURE UNAVAILABLE</span>
               </div>
             ) : isSim ? (
               <div className="flex items-center space-x-2 rounded-full border border-[#E2E8F0] bg-[#F8FAFC] px-3 py-1 font-mono text-[11px] text-[#475569] shadow-xs">
@@ -95,7 +96,7 @@ export const Header: React.FC<HeaderProps> = ({
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-600" />
                 </span>
-                <span className="font-semibold">LIVE / {cluster?.provider_name.toUpperCase()} · CONNECTED</span>
+                <span className="font-semibold">LIVE / ORACLE VIRTUALBOX · CONNECTED</span>
               </div>
             )}
           </div>
