@@ -10,6 +10,8 @@ services:
       - key: PORT
         value: 8000
       - key: MODE
+        value: live
+      - key: PROVIDER_TYPE
         value: virtualbox
       - key: SERVE_FRONTEND
         value: true
