@@ -3,7 +3,7 @@ services:
     name: vmotion-ai-control-plane
     env: docker
     dockerfilePath: Dockerfile
-    plan: standard
+    plan: free
     region: oregon
     healthCheckPath: /api/health
     envVars:
