@@ -230,6 +230,7 @@ export interface AgentSessionInfo {
   host_id: string;
   hostname: string;
   status: 'online' | 'offline';
+  lan_ip?: string | null;
   tailscale_ip?: string | null;
   vbox_version?: string | null;
   agent_version?: string | null;

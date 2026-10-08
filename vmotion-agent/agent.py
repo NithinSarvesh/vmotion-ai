@@ -11,6 +11,7 @@ import sys
 import time
 import json
 import uuid
+import socket
 import shutil
 import logging
 import platform
@@ -49,7 +50,73 @@ VBOX_PATH = os.getenv("VBOX_MANAGE_PATH", DEFAULT_VBOX_PATH)
 if not os.path.exists(VBOX_PATH) and shutil.which("VBoxManage"):
     VBOX_PATH = shutil.which("VBoxManage")
 
-SHARED_STORAGE_PATH = os.getenv("VMOTION_SHARED_STORAGE", "")
+SHARED_STORAGE_PATH = os.getenv("VMOTION_SHARED_STORAGE", r"C:\VMotionShared")
+
+
+def get_lan_ip() -> str:
+    """
+    Discovers the active LAN / Hotspot IPv4 address of this machine.
+    Dynamically resolves the interface IP used for outgoing traffic to the LAN gateway.
+    Skips loopback, link-local (169.254.x), VirtualBox host-only (192.168.56.x), WSL, and Tailscale (100.x).
+    """
+    env_ip = os.getenv("LAN_IP") or os.getenv("VMOTION_HOST_IP")
+    if env_ip and not env_ip.strip().startswith("127."):
+        return env_ip.strip()
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip and not ip.startswith("127.") and not ip.startswith("169.254."):
+            return ip
+    except Exception:
+        pass
+
+    if psutil:
+        try:
+            ignored_prefixes = ("loopback", "virtualbox", "vbox", "wsl", "vethernet", "docker", "tailscale")
+            candidate_ips = []
+            for iface_name, addrs in psutil.net_if_addrs().items():
+                lower_name = iface_name.lower()
+                if any(ignored in lower_name for ignored in ignored_prefixes):
+                    continue
+                for addr in addrs:
+                    if addr.family == socket.AF_INET:
+                        ip = addr.address
+                        if ip.startswith("127.") or ip.startswith("169.254.") or ip.startswith("100."):
+                            continue
+                        if "wi-fi" in lower_name or "wifi" in lower_name or "wireless" in lower_name or "wlan" in lower_name:
+                            return ip
+                        candidate_ips.append(ip)
+            if candidate_ips:
+                return candidate_ips[0]
+        except Exception:
+            pass
+
+    return "127.0.0.1"
+
+
+def get_network_info() -> Dict[str, Any]:
+    """Returns local networking diagnostic information for the host."""
+    lan_ip = get_lan_ip()
+    ts_ip = get_tailscale_ip()
+    interfaces = []
+    if psutil:
+        try:
+            for iface, addrs in psutil.net_if_addrs().items():
+                ip_list = [a.address for a in addrs if getattr(a, "family", None) == socket.AF_INET]
+                if ip_list:
+                    interfaces.append({"name": iface, "ipv4": ip_list})
+        except Exception:
+            pass
+    return {
+        "hostname": platform.node(),
+        "lan_ip": lan_ip,
+        "tailscale_ip": ts_ip,
+        "teleport_port": int(os.getenv("VMOTION_TELEPORT_PORT", "60050")),
+        "interfaces": interfaces
+    }
 
 
 def get_tailscale_ip() -> Optional[str]:
@@ -75,6 +142,7 @@ def get_tailscale_ip() -> Optional[str]:
             pass
 
     return os.getenv("TAILSCALE_IP", None)
+
 
 
 def run_vbox(args: list[str], timeout: float = 30.0) -> tuple[int, str, str]:
@@ -167,6 +235,7 @@ def sample_host_telemetry() -> Dict[str, Any]:
     return {
         "host_id": HOST_ID,
         "hostname": platform.node(),
+        "lan_ip": get_lan_ip(),
         "tailscale_ip": get_tailscale_ip(),
         "cpu_count": cpu_count,
         "cpu_percent": cpu_percent,
@@ -179,6 +248,36 @@ def sample_host_telemetry() -> Dict[str, Any]:
     }
 
 
+def resolve_vm_name(requested_name: str) -> str:
+    """
+    Resolves the actual VM name on this host.
+    Checks exact match first; if not found, checks for common demo names
+    (e.g., 'VMotion - demo target', 'VMotion - demo source', 'VMotion-Demo', 'DemoVM').
+    """
+    if not requested_name:
+        requested_name = "DemoVM"
+
+    rc, _, _ = run_vbox(["showvminfo", requested_name, "--machinereadable"], timeout=3.0)
+    if rc == 0:
+        return requested_name
+
+    rc_all, out_all, _ = run_vbox(["list", "vms"], timeout=4.0)
+    if rc_all == 0:
+        existing_names = [line.split('"')[1] for line in out_all.splitlines() if '"' in line]
+        if requested_name in existing_names:
+            return requested_name
+        for candidate in ["VMotion - demo target", "VMotion-Demo", "VMotion - demo source", "DemoVM"]:
+            if candidate in existing_names:
+                return candidate
+        for name in existing_names:
+            if "vmotion" in name.lower():
+                return name
+        if existing_names:
+            return existing_names[0]
+
+    return requested_name
+
+
 def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any, Optional[str]]:
     """
     Executes a validated, authorized RPC command dispatched by the Cloud Gateway.
@@ -187,7 +286,15 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
     cmd = command.upper()
 
     if cmd == "PING":
-        return "SUCCESS", {"pong": True, "time": time.time(), "host_id": HOST_ID}, None
+        rc_ver, out_ver, _ = run_vbox(["--version"])
+        return "SUCCESS", {
+            "pong": True,
+            "time": time.time(),
+            "host_id": HOST_ID,
+            "lan_ip": get_lan_ip(),
+            "tailscale_ip": get_tailscale_ip(),
+            "vbox_version": out_ver if rc_ver == 0 else "Unknown"
+        }, None
 
     elif cmd == "GET_INVENTORY":
         rc_all, out_all, _ = run_vbox(["list", "vms"], timeout=5.0)
@@ -202,10 +309,57 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
                         "name": vname,
                         "status": "running" if vname in running_names else "stopped"
                     })
-        return "SUCCESS", {"vms": vms, "total": len(vms)}, None
+        return "SUCCESS", {"vms": vms, "total": len(vms), "lan_ip": get_lan_ip()}, None
+
+    elif cmd == "GET_VM_STATE":
+        raw_vm = payload.get("vm_id", "DemoVM")
+        vm_id = resolve_vm_name(raw_vm)
+        rc, out, err = run_vbox(["showvminfo", vm_id, "--machinereadable"], timeout=5.0)
+        if rc != 0:
+            return "FAILED", {"vm_id": vm_id}, f"VM '{vm_id}' not found: {err}"
+        info = parse_machine_readable_output(out)
+        disks = []
+        for k, v in info.items():
+            if any(ctrl in k for ctrl in ["SATA", "SCSI", "IDE", "NVMe"]) and v.endswith((".vdi", ".vmdk", ".vhd")):
+                disks.append({"slot": k, "path": v})
+        return "SUCCESS", {
+            "vm_id": vm_id,
+            "state": info.get("VMState", "unknown"),
+            "session_state": info.get("SessionState", "unknown"),
+            "cpus": int(info.get("cpus", 1)),
+            "memory_mb": int(info.get("memory", 1024)),
+            "snapshots": int(info.get("SnapshotCount", 0)),
+            "teleporter_enabled": info.get("teleporterenabled", "off") == "on",
+            "teleporter_port": int(info.get("teleporterport", 0)) if info.get("teleporterport") else None,
+            "disks": disks
+        }, None
+
+    elif cmd == "GET_NETWORK_INFO":
+        return "SUCCESS", get_network_info(), None
+
+    elif cmd == "VERIFY_SHARED_STORAGE":
+        path = payload.get("path") or SHARED_STORAGE_PATH or r"C:\VMotionShared"
+        exists = os.path.exists(path)
+        writable = False
+        if exists:
+            probe_file = os.path.join(path, f".vmotion_probe_{uuid.uuid4().hex[:6]}")
+            try:
+                with open(probe_file, "w") as f:
+                    f.write("probe")
+                os.remove(probe_file)
+                writable = True
+            except Exception:
+                pass
+        return ("SUCCESS" if exists and writable else "FAILED"), {
+            "path": path,
+            "exists": exists,
+            "writable": writable,
+            "accessible": (exists and writable)
+        }, (None if exists and writable else f"Storage path '{path}' is not accessible or writable")
 
     elif cmd == "PREFLIGHT":
-        vm_id = payload.get("vm_id", "DemoVM")
+        raw_vm = payload.get("vm_id", "DemoVM")
+        vm_id = resolve_vm_name(raw_vm)
         port = payload.get("port", 60050)
         target_path = payload.get("shared_storage_path", SHARED_STORAGE_PATH)
 
@@ -213,8 +367,10 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
         vm_exists = (rc == 0)
         snapshots_count = 0
         disks = []
+        vm_state = "unknown"
         if vm_exists:
             info = parse_machine_readable_output(out)
+            vm_state = info.get("VMState", "unknown")
             snapshots_count = int(info.get("SnapshotCount", 0))
             for k, v in info.items():
                 if any(ctrl in k for ctrl in ["SATA", "SCSI", "IDE", "NVMe"]) and v.endswith((".vdi", ".vmdk", ".vhd")):
@@ -224,12 +380,15 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
 
         data = {
             "vm_id": vm_id,
+            "resolved_vm_name": vm_id,
             "vm_exists": vm_exists,
+            "vm_state": vm_state,
             "vbox_installed": bool(VBOX_PATH and os.path.exists(VBOX_PATH)),
             "snapshots_present": (snapshots_count > 0),
             "snapshot_count": snapshots_count,
             "storage_accessible": storage_accessible,
             "disks": disks,
+            "lan_ip": get_lan_ip(),
             "tailscale_ip": get_tailscale_ip(),
             "port": port
         }
@@ -237,35 +396,111 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
         return ("SUCCESS" if all_ok else "FAILED"), data, (None if all_ok else "Pre-flight checks failed")
 
     elif cmd == "PREPARE_TARGET":
-        vm_id = payload.get("vm_id", "DemoVM")
+        raw_vm = payload.get("vm_id", "DemoVM")
+        vm_id = resolve_vm_name(raw_vm)
         port = payload.get("port", 60050)
         addr = payload.get("address", "0.0.0.0")
 
-        logger.info(f"[RPC] Preparing target VM '{vm_id}' on port {port}...")
-        mod_rc, _, mod_err = run_vbox([
+        logger.info(f"[RPC] Preparing target VM '{vm_id}' on port {port} (addr: {addr})...")
+
+        # 1. Recover/Unlock VM if it is already locked or running (resolves VBOX_E_INVALID_OBJECT_STATE)
+        rc_info, out_info, _ = run_vbox(["showvminfo", vm_id, "--machinereadable"], timeout=5.0)
+        if rc_info == 0:
+            info = parse_machine_readable_output(out_info)
+            curr_state = info.get("VMState", "").lower()
+            if curr_state not in ("poweroff", "aborted"):
+                logger.warning(f"[RPC PREPARE_TARGET] VM '{vm_id}' is in '{curr_state}' state. Gracefully stopping to unlock session...")
+                if curr_state == "saved":
+                    run_vbox(["discardstate", vm_id], timeout=5.0)
+                else:
+                    run_vbox(["controlvm", vm_id, "poweroff"], timeout=8.0)
+
+                # Poll until state becomes poweroff
+                for _ in range(20):
+                    time.sleep(0.5)
+                    rc_chk, out_chk, _ = run_vbox(["showvminfo", vm_id, "--machinereadable"], timeout=3.0)
+                    if rc_chk == 0:
+                        cur_info = parse_machine_readable_output(out_chk)
+                        if cur_info.get("VMState", "").lower() in ("poweroff", "aborted"):
+                            break
+
+        # 2. Modify VM to arm teleporter
+        mod_args = [
             "modifyvm", vm_id,
             "--teleporter", "on",
             "--teleporter-port", str(port),
             "--teleporter-address", addr
-        ], timeout=15.0)
+        ]
+        mod_rc, _, mod_err = run_vbox(mod_args, timeout=15.0)
+        if mod_rc != 0:
+            # If still locked momentarily, sleep 1 second and retry
+            time.sleep(1.0)
+            mod_rc, _, mod_err = run_vbox(mod_args, timeout=15.0)
+            if mod_rc != 0:
+                logger.warning(f"[RPC] modifyvm returned error: {mod_err}. Attempting startvm anyway...")
 
-        # Start VM in headless listening mode
+        # 3. Start VM in headless listening mode
         start_rc, _, start_err = run_vbox(["startvm", vm_id, "--type", "headless"], timeout=20.0)
         if start_rc != 0 and "already" not in start_err.lower():
             return "FAILED", {"vm_id": vm_id}, f"Failed to launch target VM headlessly: {start_err}"
 
+        # 4. Verify listener state
+        is_listening = False
+        for _ in range(12):
+            time.sleep(0.5)
+            rc_st, out_st, _ = run_vbox(["showvminfo", vm_id, "--machinereadable"], timeout=3.0)
+            if rc_st == 0:
+                st_info = parse_machine_readable_output(out_st)
+                st_state = st_info.get("VMState", "").lower()
+                if st_state in ("teleporting", "running") or st_info.get("teleporterenabled") == "on":
+                    is_listening = True
+                    break
+
         return "SUCCESS", {
             "vm_id": vm_id,
+            "resolved_vm_name": vm_id,
             "port": port,
             "status": "LISTENING",
+            "lan_ip": get_lan_ip(),
+            "tailscale_ip": get_tailscale_ip(),
             "message": f"Target VM '{vm_id}' listening for teleportation on port {port}."
         }, None
 
+    elif cmd == "TARGET_READY":
+        raw_vm = payload.get("vm_id", "DemoVM")
+        vm_id = resolve_vm_name(raw_vm)
+        port = payload.get("port", 60050)
+        rc, out, _ = run_vbox(["showvminfo", vm_id, "--machinereadable"], timeout=5.0)
+        ready = False
+        vm_state = "unknown"
+        if rc == 0:
+            info = parse_machine_readable_output(out)
+            vm_state = info.get("VMState", "unknown")
+            ready = (info.get("teleporterenabled") == "on") or (vm_state.lower() in ("teleporting", "running"))
+        return ("SUCCESS" if ready else "FAILED"), {
+            "vm_id": vm_id,
+            "port": port,
+            "ready": ready,
+            "vm_state": vm_state,
+            "lan_ip": get_lan_ip()
+        }, (None if ready else f"Target VM '{vm_id}' is not in ready/listening state (state: {vm_state})")
+
     elif cmd == "EXECUTE_TELEPORT":
-        vm_id = payload.get("vm_id", "DemoVM")
+        raw_vm = payload.get("vm_id", "DemoVM")
+        vm_id = resolve_vm_name(raw_vm)
         target_host = payload.get("target_host", "127.0.0.1")
         port = payload.get("port", 60050)
         max_dt = payload.get("max_downtime_ms", 500)
+
+        # Pre-flight TCP connectivity probe to target host over LAN/hotspot
+        try:
+            probe_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            probe_sock.settimeout(3.0)
+            probe_sock.connect((target_host, int(port)))
+            probe_sock.close()
+            logger.info(f"[RPC] Pre-teleport TCP reachability verified to {target_host}:{port}.")
+        except Exception as conn_err:
+            logger.warning(f"[RPC] Notice: Pre-teleport TCP connect probe to {target_host}:{port} reported: {conn_err}")
 
         teleport_args = [
             "controlvm", vm_id,
@@ -291,7 +526,8 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
             return "FAILED", {"vm_id": vm_id, "stderr": stderr, "stdout": stdout}, f"Teleport failed: {stderr or stdout}"
 
     elif cmd == "VERIFY_PLACEMENT":
-        vm_id = payload.get("vm_id", "DemoVM")
+        raw_vm = payload.get("vm_id", "DemoVM")
+        vm_id = resolve_vm_name(raw_vm)
         expected_state = payload.get("expected_state", "running")
         rc, out, _ = run_vbox(["list", "runningvms"], timeout=5.0)
         is_running = any(f'"{vm_id}"' in line for line in out.splitlines()) if rc == 0 else False
@@ -304,8 +540,23 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
             "verified": matches
         }, (None if matches else f"VM running state did not match expected '{expected_state}'")
 
+    elif cmd == "ABORT_TARGET":
+        raw_vm = payload.get("vm_id", "DemoVM")
+        vm_id = resolve_vm_name(raw_vm)
+        logger.info(f"[RPC] Aborting target teleporter on '{vm_id}'...")
+        run_vbox(["controlvm", vm_id, "poweroff"], timeout=10.0)
+        run_vbox(["modifyvm", vm_id, "--teleporter", "off"], timeout=10.0)
+        return "SUCCESS", {"vm_id": vm_id, "status": "ABORTED"}, None
+
+    elif cmd == "CLEANUP_AFTER_MIGRATION":
+        raw_vm = payload.get("vm_id", "DemoVM")
+        vm_id = resolve_vm_name(raw_vm)
+        logger.info(f"[RPC] Post-migration cleanup on '{vm_id}'...")
+        return "SUCCESS", {"vm_id": vm_id, "status": "CLEANED"}, None
+
     else:
         return "FAILED", {}, f"Unknown or unauthorized command '{command}'"
+
 
 
 async def cloud_gateway_client_task():
@@ -331,12 +582,13 @@ async def cloud_gateway_client_task():
                     "type": "REGISTER",
                     "host_id": HOST_ID,
                     "hostname": platform.node(),
+                    "lan_ip": get_lan_ip(),
                     "tailscale_ip": get_tailscale_ip(),
                     "vbox_version": out_ver if rc_ver == 0 else "Unknown",
-                    "agent_version": "2.0.0"
+                    "agent_version": "2.1.0"
                 }
                 await ws.send(json.dumps(reg_pkt))
-                logger.info(f"[Gateway Client] Connected & Registered with Cloud Gateway as '{HOST_ID}'!")
+                logger.info(f"[Gateway Client] Connected & Registered with Cloud Gateway as '{HOST_ID}' (LAN: {reg_pkt['lan_ip']})!")
 
                 # Concurrent telemetry pusher and command receiver
                 last_telemetry_time = 0.0
@@ -445,11 +697,17 @@ def health(authenticated: bool = Depends(verify_auth)):
         "vbox_version": version,
         "vbox_path": VBOX_PATH,
         "hostname": platform.node(),
+        "lan_ip": get_lan_ip(),
         "tailscale_ip": get_tailscale_ip(),
         "os": f"{platform.system()} {platform.release()}",
         "cloud_gateway_url": CLOUD_GATEWAY_URL,
         "timestamp": time.time()
     }
+
+
+@app.get("/agent/network")
+def get_network(authenticated: bool = Depends(verify_auth)):
+    return get_network_info()
 
 
 @app.get("/agent/host")

@@ -116,6 +116,7 @@ async def websocket_agent_gateway_endpoint(
             if packet_type == "REGISTER":
                 registered_host_id = packet.get("host_id", host_id)
                 hostname = packet.get("hostname", registered_host_id)
+                lan_ip = packet.get("lan_ip")
                 tailscale_ip = packet.get("tailscale_ip")
                 vbox_ver = packet.get("vbox_version")
                 agent_ver = packet.get("agent_version")
@@ -124,6 +125,7 @@ async def websocket_agent_gateway_endpoint(
                     host_id=registered_host_id,
                     websocket=websocket,
                     hostname=hostname,
+                    lan_ip=lan_ip,
                     tailscale_ip=tailscale_ip,
                     vbox_version=vbox_ver,
                     agent_version=agent_ver

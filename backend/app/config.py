@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     VBOX_TELEPORT_PORT: int = 60050
     VBOX_SHARED_STORAGE_PATH: str = ""
     VBOX_DEMO_VM_NAME: str = "DemoVM"
+    VBOX_TARGET_VM_NAME: str = "VMotion - demo target"
 
     # Optional Legacy Parameters
     PROXMOX_ENDPOINT: str = "https://192.168.1.100:8006/api2/json"

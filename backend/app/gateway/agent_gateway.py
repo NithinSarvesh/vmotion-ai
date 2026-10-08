@@ -44,6 +44,7 @@ class AgentSession:
         host_id: str,
         websocket: WebSocket,
         hostname: str = "",
+        lan_ip: Optional[str] = None,
         tailscale_ip: Optional[str] = None,
         vbox_version: Optional[str] = None,
         agent_version: Optional[str] = None,
@@ -51,6 +52,7 @@ class AgentSession:
         self.host_id = host_id
         self.websocket = websocket
         self.hostname = hostname or host_id
+        self.lan_ip = lan_ip
         self.tailscale_ip = tailscale_ip
         self.vbox_version = vbox_version
         self.agent_version = agent_version
@@ -85,6 +87,7 @@ class AgentSession:
             "host_id": self.host_id,
             "hostname": self.hostname,
             "status": "online" if alive else "offline",
+            "lan_ip": self.lan_ip,
             "tailscale_ip": self.tailscale_ip,
             "vbox_version": self.vbox_version,
             "agent_version": self.agent_version,
@@ -93,6 +96,7 @@ class AgentSession:
             "latency_ms": latency if alive else None,
             "has_telemetry": self.latest_telemetry is not None
         }
+
 
 
 class CloudAgentGateway:
@@ -110,6 +114,7 @@ class CloudAgentGateway:
         host_id: str,
         websocket: WebSocket,
         hostname: str = "",
+        lan_ip: Optional[str] = None,
         tailscale_ip: Optional[str] = None,
         vbox_version: Optional[str] = None,
         agent_version: Optional[str] = None
@@ -127,6 +132,7 @@ class CloudAgentGateway:
                 host_id=host_id,
                 websocket=websocket,
                 hostname=hostname,
+                lan_ip=lan_ip,
                 tailscale_ip=tailscale_ip,
                 vbox_version=vbox_version,
                 agent_version=agent_version
@@ -135,7 +141,7 @@ class CloudAgentGateway:
 
             logger.info(
                 f"[Gateway] Host Agent '{host_id}' registered successfully. "
-                f"Hostname: '{hostname}', Tailscale: '{tailscale_ip}', VBox: '{vbox_version}'"
+                f"Hostname: '{hostname}', LAN: '{lan_ip}', Tailscale: '{tailscale_ip}', VBox: '{vbox_version}'"
             )
             audit_logger.log_event(
                 event_type="CLUSTER_CONNECTED",
@@ -143,6 +149,7 @@ class CloudAgentGateway:
                 details={
                     "host_id": host_id,
                     "hostname": hostname,
+                    "lan_ip": lan_ip,
                     "tailscale_ip": tailscale_ip,
                     "vbox_version": vbox_version
                 }
@@ -181,7 +188,9 @@ class CloudAgentGateway:
         if session:
             session.last_heartbeat_at = time.time()
             session.latest_telemetry = telemetry_data
-            # Update Tailscale IP or host specs if provided in telemetry
+            # Update LAN IP or Tailscale IP or host specs if provided in telemetry
+            if "lan_ip" in telemetry_data and telemetry_data["lan_ip"]:
+                session.lan_ip = telemetry_data["lan_ip"]
             if "tailscale_ip" in telemetry_data and telemetry_data["tailscale_ip"]:
                 session.tailscale_ip = telemetry_data["tailscale_ip"]
             if "hostname" in telemetry_data and telemetry_data["hostname"]:

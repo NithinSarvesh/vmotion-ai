@@ -53,6 +53,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
         teleport_port: Optional[int] = None,
         shared_storage_path: Optional[str] = None,
         demo_vm_name: Optional[str] = None,
+        target_vm_name: Optional[str] = None,
     ):
         self.vbox_manage_path = vbox_manage_path or settings.VBOX_MANAGE_PATH
         self.host_a_url = host_a_url or settings.VBOX_HOST_A_URL
@@ -61,6 +62,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
         self.teleport_port = teleport_port or settings.VBOX_TELEPORT_PORT
         self.shared_storage_path = shared_storage_path or settings.VBOX_SHARED_STORAGE_PATH
         self.demo_vm_name = demo_vm_name or settings.VBOX_DEMO_VM_NAME
+        self.target_vm_name = target_vm_name or getattr(settings, "VBOX_TARGET_VM_NAME", "VMotion - demo target")
 
         # Resolve local VBoxManage path
         self._resolve_vbox_binary()
@@ -261,8 +263,9 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
             host_a_ram_used = float(t_a.get("ram_used_mb", 8192.0))
             host_a_ram_pct = float(t_a.get("ram_percent", 50.0))
             active_vms_a = [vm.get("name") for vm in t_a.get("vms", []) if vm.get("status") == "running"]
+            lan_str = f" • LAN: {session_a.lan_ip}" if session_a.lan_ip else ""
             ts_str = f" • Tailscale: {session_a.tailscale_ip}" if session_a.tailscale_ip else ""
-            host_a_name = f"{session_a.hostname}{ts_str}"
+            host_a_name = f"{session_a.hostname}{lan_str}{ts_str}"
             node_a_status = "online"
         elif psutil:
             host_a_cpus = psutil.cpu_count(logical=True) or 8
@@ -311,8 +314,9 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
             node_b_cpu_pct = float(t_b.get("cpu_percent", 15.0))
             node_b_ram_pct = float(t_b.get("ram_percent", 35.0))
             node_b_active_vms = [vm.get("name") for vm in t_b.get("vms", []) if vm.get("status") == "running"]
+            lan_str = f" • LAN: {session_b.lan_ip}" if session_b.lan_ip else ""
             ts_str = f" • Tailscale: {session_b.tailscale_ip}" if session_b.tailscale_ip else ""
-            host_b_name = f"{session_b.hostname}{ts_str}"
+            host_b_name = f"{session_b.hostname}{lan_str}{ts_str}"
             node_b_status = "online"
         else:
             try:
@@ -417,7 +421,54 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                             sla_priority="standard"
                         ))
 
-        # If no VMs are registered locally, expose the configured demo VM template
+        # If running in cloud control plane or no local VMs, discover live VMs from connected agents
+        if not vms:
+            session_a = agent_gateway.get_session(settings.HOST_A_ID)
+            if session_a and session_a.latest_telemetry:
+                agent_vms = session_a.latest_telemetry.get("vms", [])
+                for avm in agent_vms:
+                    avm_name = avm.get("name")
+                    if avm_name and not any(v.vmid == avm_name for v in vms):
+                        vms.append(VMTelemetry(
+                            vmid=avm_name,
+                            name=f"{avm_name} (Ubuntu)" if "vmotion" in avm_name.lower() else avm_name,
+                            node_id="vbox-host-a",
+                            status="running" if avm.get("status") == "running" else "stopped",
+                            cpu_cores=int(avm.get("cpus", 2)),
+                            cpu_percent=float(avm.get("cpu_percent", 25.0)),
+                            ram_allocated_mb=float(avm.get("memory_mb", 4096.0)),
+                            ram_used_mb=float(avm.get("memory_mb", 4096.0)) * 0.45,
+                            ram_percent=45.0,
+                            net_io_kbps=150.0,
+                            disk_allocated_gb=25.0,
+                            sla_priority="high",
+                            sla_max_cpu_percent=80.0,
+                            uptime_seconds=3600,
+                            migration_count=0
+                        ))
+
+            session_b = agent_gateway.get_session(settings.HOST_B_ID)
+            if session_b and session_b.latest_telemetry:
+                agent_b_vms = session_b.latest_telemetry.get("vms", [])
+                for bvm in agent_b_vms:
+                    bvm_name = bvm.get("name")
+                    if bvm_name and not any(v.vmid == bvm_name for v in vms):
+                        vms.append(VMTelemetry(
+                            vmid=bvm_name,
+                            name=bvm_name,
+                            node_id="vbox-host-b",
+                            status="running" if bvm.get("status") == "running" else "stopped",
+                            cpu_cores=int(bvm.get("cpus", 2)),
+                            cpu_percent=float(bvm.get("cpu_percent", 15.0)),
+                            ram_allocated_mb=float(bvm.get("memory_mb", 4096.0)),
+                            ram_used_mb=float(bvm.get("memory_mb", 4096.0)) * 0.35,
+                            ram_percent=35.0,
+                            net_io_kbps=80.0,
+                            disk_allocated_gb=25.0,
+                            sla_priority="standard"
+                        ))
+
+        # If still no VMs are registered, expose the configured demo VM template
         if not vms:
             vms.append(VMTelemetry(
                 vmid=self.demo_vm_name,
@@ -438,6 +489,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
             ))
 
         return vms
+
 
     async def collect_telemetry(self) -> ClusterState:
         """Collects live aggregated cluster telemetry for Host A and Host B."""
@@ -594,24 +646,25 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
         Dispatched via Agent Gateway if remote target agent is online, else executed locally.
         """
         target_agent = self._node_to_agent_id(target_node)
+        resolved_vm = self.target_vm_name or target_vm
         if agent_gateway.is_agent_online(target_agent):
             try:
                 resp = await agent_gateway.dispatch_command(
                     agent_id=target_agent,
                     command="PREPARE_TARGET",
-                    payload={"vm_id": target_vm, "port": port, "address": "0.0.0.0"},
+                    payload={"vm_id": resolved_vm, "port": port, "address": "0.0.0.0"},
                     timeout_seconds=25.0
                 )
                 if resp.status == "SUCCESS":
-                    return True, f"Target agent '{target_agent}' armed teleporter on port {port} for '{target_vm}'."
+                    return True, f"Target agent '{target_agent}' armed teleporter on port {port} for '{resolved_vm}'."
                 else:
                     return False, f"Target agent failed to arm teleporter: {resp.error}"
             except Exception as e:
                 logger.warning(f"Error arming teleporter via agent gateway for '{target_agent}': {e}. Falling back to local.")
 
-        logger.info(f"Preparing target VM '{target_vm}' for teleportation on port {port} locally...")
+        logger.info(f"Preparing target VM '{resolved_vm}' for teleportation on port {port} locally...")
         mod_rc, _, mod_err = self._run_vbox_local([
-            "modifyvm", target_vm,
+            "modifyvm", resolved_vm,
             "--teleporter", "on",
             "--teleporter-port", str(port),
             "--teleporter-address", "0.0.0.0"
@@ -620,17 +673,17 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
             logger.warning(f"Target modifyvm returned: {mod_err}. Proceeding with agent fallback if remote.")
 
         # Start target in teleport waiting mode
-        start_rc, _, start_err = self._run_vbox_local(["startvm", target_vm, "--type", "headless"])
+        start_rc, _, start_err = self._run_vbox_local(["startvm", resolved_vm, "--type", "headless"])
         if start_rc != 0 and "already" not in start_err.lower():
             logger.warning(f"Target startvm: {start_err}")
 
-        return True, f"Target VM '{target_vm}' armed for incoming teleporter stream on port {port}."
+        return True, f"Target VM '{resolved_vm}' armed for incoming teleporter stream on port {port}."
 
     async def execute_migration(self, plan: MigrationPlan) -> str:
         """
         Initiates the Oracle VirtualBox Teleportation workflow:
         1. Prepares target VM listener (modifyvm --teleporter on, startvm headless)
-        2. Resolves target Tailscale overlay IP from gateway session
+        2. Resolves target LAN/Hotspot IP (or Tailscale overlay IP) from gateway session
         3. Dispatches source teleportation via Agent Gateway RPC or local VBoxManage
         """
         task_id = f"vbx-teleport-{uuid.uuid4().hex[:8]}"
@@ -665,14 +718,18 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
         initial_status.progress_percent = 40.0
         initial_status.updated_at = time.time()
 
-        # Step 2: Resolve Target Tailscale IP or fallback
+        # Step 2: Resolve Target IP (prioritizing LAN IP over phone hotspot, then Tailscale overlay)
         target_agent_id = self._node_to_agent_id(plan.target_node)
         session_b = agent_gateway.get_session(target_agent_id)
-        if session_b and session_b.tailscale_ip:
+        if session_b and session_b.lan_ip:
+            target_ip = session_b.lan_ip
+            logger.info(f"Target IP resolved from LAN / Phone Hotspot: {target_ip} ({target_agent_id})")
+        elif session_b and session_b.tailscale_ip:
             target_ip = session_b.tailscale_ip
             logger.info(f"Target IP resolved from Tailscale overlay: {target_ip} ({target_agent_id})")
         else:
             target_ip = "127.0.0.1" if "local" in plan.target_node or "host-b" in plan.target_node else "192.168.1.101"
+
 
         source_agent_id = self._node_to_agent_id(plan.source_node)
         if agent_gateway.is_agent_online(source_agent_id):

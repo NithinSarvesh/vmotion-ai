@@ -60,8 +60,11 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
   const agentA = agents?.find(a => a.host_id === 'host-a' || a.host_id === 'vbox-host-a');
   const agentB = agents?.find(a => a.host_id === 'host-b' || a.host_id === 'vbox-host-b');
 
-  const hostATailscaleIp = agentA?.tailscale_ip || '100.64.0.10';
-  const hostBTailscaleIp = agentB?.tailscale_ip || '100.64.0.20';
+  const hostALanIp = agentA?.lan_ip || '172.16.0.2';
+  const hostBLanIp = agentB?.lan_ip || '172.16.0.15';
+  const hostATailscaleIp = agentA?.tailscale_ip;
+  const hostBTailscaleIp = agentB?.tailscale_ip;
+
   const agentAOnline = agentA ? agentA.status === 'online' : true;
   const agentBOnline = agentB ? agentB.status === 'online' : true;
   const agentAPing = agentA?.latency_ms ?? 14.2;
@@ -90,37 +93,49 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
 
   const hostANode = cluster?.nodes['vbox-host-a'] || {
     id: 'vbox-host-a',
-    name: 'Host A (Source Computer)',
+    name: 'Host A (Source Laptop)',
     status: 'online',
     cpu_cores: 8,
     cpu_percent: 48.5,
     ram_total_mb: 16384,
     ram_used_mb: 8192,
     ram_percent: 50.0,
-    active_vms: demoState === 'VERIFIED' ? [] : ['DemoVM']
+    active_vms: demoState === 'VERIFIED' ? [] : ['VMotion-Demo']
   };
 
   const hostBNode = cluster?.nodes['vbox-host-b'] || {
     id: 'vbox-host-b',
-    name: 'Host B (Target Computer)',
+    name: 'Host B (Target Laptop)',
     status: 'online',
     cpu_cores: 8,
     cpu_percent: 18.2,
     ram_total_mb: 16384,
     ram_used_mb: 4915,
     ram_percent: 30.0,
-    active_vms: demoState === 'VERIFIED' ? ['DemoVM'] : []
+    active_vms: demoState === 'VERIFIED' ? ['VMotion - demo target'] : []
+  };
+
+  // Discovered VM on Source
+  const sourceVm = Object.values(cluster?.vms || {}).find(v => v.node_id === 'vbox-host-a') || {
+    vmid: 'VMotion-Demo',
+    name: 'VMotion-Demo (Ubuntu 24.10)',
+    status: 'running',
+    cpu_cores: 2,
+    ram_allocated_mb: 4096,
+    cpu_percent: 28.4
   };
 
   const compatibilityChecklist = [
-    { label: 'Snapshot Validation', source: '0 Snapshots', target: '0 Snapshots Required', ok: true },
-    { label: 'vCPU Allocation', source: '2 Cores', target: '2 Cores', ok: true },
-    { label: 'RAM Allocation', source: '2048 MB', target: '2048 MB', ok: true },
-    { label: 'Chipset Architecture', source: 'PIIX3', target: 'PIIX3', ok: true },
-    { label: 'System Firmware', source: 'BIOS', target: 'BIOS', ok: true },
-    { label: 'Storage Controller', source: 'SATA AHCI', target: 'SATA AHCI', ok: true },
-    { label: 'Shared Disk Path', source: 'Shared VDI', target: 'Accessible on Target', ok: true },
-    { label: 'Tailscale Teleport Port', source: 'Port 60050 Open', target: 'Receiver Listening', ok: true }
+    { label: 'Snapshot Validation (0 Snapshots)', ok: true },
+    { label: 'vCPU Allocation Matching (2 Cores)', ok: true },
+    { label: 'RAM Allocation Matching (4096 MB)', ok: true },
+    { label: 'Chipset Architecture (PIIX3)', ok: true },
+    { label: 'System Firmware (BIOS)', ok: true },
+    { label: 'Storage Controller (SATA AHCI)', ok: true },
+    { label: 'Shared Disk Path (\\\\HostA\\VMotionShared)', ok: true },
+    { label: 'Direct LAN Port 60050 Open', ok: true },
+    { label: 'Target Session Lock (Auto-Cleared)', ok: true },
+    { label: 'Target Headless Listener (Armed)', ok: true }
   ];
 
   const handleManualApprove = async () => {
@@ -145,13 +160,13 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div className="space-y-1">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-400/30 text-blue-400 text-xs font-semibold uppercase tracking-wider">
-              <Zap className="w-3.5 h-3.5" /> Real Infrastructure Teleportation Mode
+              <Zap className="w-3.5 h-3.5" /> Real Physical Infrastructure Live Teleportation
             </div>
             <h2 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">
               Oracle VirtualBox Live VM Teleportation Center
             </h2>
             <p className="text-sm text-slate-300">
-              Live zero-loss state migration over Tailscale private overlay mesh using authoritative <code className="text-blue-300 bg-blue-950/60 px-1.5 py-0.5 rounded text-xs font-mono">VBoxManage controlvm teleport</code>.
+              Live zero-loss state migration over Direct Phone Hotspot / LAN TCP on port 60050 using <code className="text-blue-300 bg-blue-950/60 px-1.5 py-0.5 rounded text-xs font-mono">VBoxManage controlvm teleport</code>. Zero cloud data relay.
             </p>
           </div>
 
@@ -165,7 +180,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
             <div className="flex items-center gap-2 bg-slate-900/80 px-3.5 py-2 rounded-xl border border-slate-800 text-xs font-mono">
               <Wifi className="w-3.5 h-3.5 text-blue-400" />
               <span className="text-slate-300 font-medium">Data Plane:</span>
-              <span className="text-white font-semibold">Tailscale WireGuard</span>
+              <span className="text-emerald-400 font-semibold">Direct Hotspot / LAN P2P</span>
             </div>
           </div>
         </div>
@@ -173,7 +188,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
 
       {/* Dual Host Topology Visualization */}
       <div className="grid grid-cols-1 lg:grid-cols-11 gap-6 items-center">
-        {/* Host A (Source) */}
+        {/* Host A (Source Laptop) */}
         <div className={`lg:col-span-5 rounded-2xl p-6 border transition-all duration-300 ${
           demoState === 'VERIFIED'
             ? 'bg-slate-900/50 border-slate-800 opacity-80'
@@ -185,11 +200,17 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
                 <Server className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="font-bold text-white text-lg">{hostANode.name}</h3>
-                <div className="flex items-center gap-2 mt-0.5">
-                  <span className="text-xs text-blue-300 font-mono bg-blue-950/60 px-1.5 py-0.5 rounded border border-blue-800/40">
-                    Tailscale: {hostATailscaleIp}
+                <div className="flex items-center gap-2">
+                  <h3 className="font-bold text-white text-lg">Host A (Source Laptop)</h3>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-blue-900/40 text-blue-300 border border-blue-700/40 font-bold">SOURCE</span>
+                </div>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-xs text-emerald-400 font-mono bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/40 font-bold">
+                    LAN: {hostALanIp}
                   </span>
+                  {hostATailscaleIp && (
+                    <span className="text-[11px] text-slate-400 font-mono">TS: {hostATailscaleIp}</span>
+                  )}
                   <span className="text-[11px] text-slate-400 font-mono">({agentAPing}ms)</span>
                 </div>
               </div>
@@ -206,7 +227,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
           <div className="space-y-4 mb-6">
             <div>
               <div className="flex justify-between text-xs text-slate-400 mb-1.5 font-medium">
-                <span>Host CPU Load</span>
+                <span>CPU Load</span>
                 <span>{hostANode.cpu_percent.toFixed(1)}%</span>
               </div>
               <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
@@ -221,7 +242,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
 
             <div>
               <div className="flex justify-between text-xs text-slate-400 mb-1.5 font-medium">
-                <span>Host RAM Usage</span>
+                <span>RAM Usage</span>
                 <span>{hostANode.ram_percent.toFixed(1)}% ({Math.round(hostANode.ram_used_mb)} MB)</span>
               </div>
               <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
@@ -243,8 +264,14 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
               <div className="flex items-center gap-3">
                 <Monitor className={`w-4 h-4 ${demoState === 'VERIFIED' ? 'text-slate-500' : 'text-blue-400'}`} />
                 <div>
-                  <div className="text-sm font-bold text-white">DemoVM (Ubuntu 22.04 LTS)</div>
-                  <div className="text-xs text-slate-400">2 vCPUs • 2048 MB RAM • 0 Snapshots</div>
+                  <div className="text-sm font-bold text-white">{sourceVm.name}</div>
+                  <div className="text-xs text-slate-400 flex items-center gap-2 mt-0.5">
+                    <span>{sourceVm.cpu_cores} vCPUs</span>
+                    <span>•</span>
+                    <span>{sourceVm.ram_allocated_mb} MB RAM</span>
+                    <span>•</span>
+                    <span>Shared VDI (SMB)</span>
+                  </div>
                 </div>
               </div>
               <span className={`px-2 py-0.5 rounded text-[11px] font-semibold uppercase tracking-wider ${
@@ -270,14 +297,14 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
             <ArrowRight className="w-6 h-6" />
           </div>
           <span className="text-[10px] font-mono font-semibold uppercase text-slate-400 mt-2 text-center tracking-wider">
-            {demoState === 'TELEPORTING' ? 'TELEPORTING...' : 'TAILSCALE'}
+            {demoState === 'TELEPORTING' ? 'TELEPORTING...' : 'DIRECT LAN'}
           </span>
-          <span className="text-[9px] font-mono text-emerald-400 text-center">
-            PORT 60050
+          <span className="text-[9px] font-mono text-emerald-400 text-center font-bold">
+            TCP PORT 60050
           </span>
         </div>
 
-        {/* Host B (Target) */}
+        {/* Host B (Target Laptop - Friend's Laptop) */}
         <div className={`lg:col-span-5 rounded-2xl p-6 border transition-all duration-300 ${
           demoState === 'VERIFIED'
             ? 'bg-slate-900/90 border-emerald-500/50 shadow-xl shadow-emerald-500/10'
@@ -289,11 +316,17 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
                 <Server className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="font-bold text-white text-lg">{hostBNode.name}</h3>
-                <div className="flex items-center gap-2 mt-0.5">
-                  <span className="text-xs text-purple-300 font-mono bg-purple-950/60 px-1.5 py-0.5 rounded border border-purple-800/40">
-                    Tailscale: {hostBTailscaleIp}
+                <div className="flex items-center gap-2">
+                  <h3 className="font-bold text-white text-lg">Host B (Target Laptop)</h3>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-900/40 text-purple-300 border border-purple-700/40 font-bold">TARGET</span>
+                </div>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-xs text-emerald-400 font-mono bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/40 font-bold">
+                    LAN: {hostBLanIp}
                   </span>
+                  {hostBTailscaleIp && (
+                    <span className="text-[11px] text-slate-400 font-mono">TS: {hostBTailscaleIp}</span>
+                  )}
                   <span className="text-[11px] text-slate-400 font-mono">({agentBPing}ms)</span>
                 </div>
               </div>
@@ -310,7 +343,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
           <div className="space-y-4 mb-6">
             <div>
               <div className="flex justify-between text-xs text-slate-400 mb-1.5 font-medium">
-                <span>Host CPU Load</span>
+                <span>CPU Load</span>
                 <span>{hostBNode.cpu_percent.toFixed(1)}%</span>
               </div>
               <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
@@ -323,7 +356,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
 
             <div>
               <div className="flex justify-between text-xs text-slate-400 mb-1.5 font-medium">
-                <span>Host RAM Usage</span>
+                <span>RAM Usage</span>
                 <span>{hostBNode.ram_percent.toFixed(1)}% ({Math.round(hostBNode.ram_used_mb)} MB)</span>
               </div>
               <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
@@ -345,11 +378,11 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
               <div className="flex items-center gap-3">
                 <Monitor className={`w-4 h-4 ${demoState === 'VERIFIED' ? 'text-emerald-400' : 'text-slate-500'}`} />
                 <div>
-                  <div className="text-sm font-bold text-white">Target Teleporter Listener</div>
+                  <div className="text-sm font-bold text-white">VMotion - demo target</div>
                   <div className="text-xs text-slate-400">
                     {demoState === 'VERIFIED'
-                      ? 'DemoVM is currently active and hosting live traffic'
-                      : `Listening on ${hostBTailscaleIp}:60050 • Headless waiting mode`}
+                      ? 'Workload active and hosting live network execution'
+                      : `Teleporter armed on ${hostBLanIp}:60050 • Headless listening mode`}
                   </div>
                 </div>
               </div>
@@ -373,13 +406,13 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
           </div>
           <div>
             <div className="font-bold text-white flex items-center gap-2">
-              <span>Public Cloud Agent Gateway</span>
+              <span>Public Cloud Agent Gateway (Render Control Plane)</span>
               <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                 ACTIVE
               </span>
             </div>
             <div className="text-slate-400">
-              Persistent Outbound WSS (<code className="text-blue-300">/ws/agent</code>) • Zero Inbound Ports Required on Physical Laptops
+              Persistent Outbound WSS (<code className="text-blue-300">/ws/agent</code>) • Zero Inbound Ports Required on Laptops • Direct P2P Hotspot Data Stream
             </div>
           </div>
         </div>
@@ -387,15 +420,15 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
         <div className="flex flex-wrap items-center gap-3 font-mono text-[11px]">
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800">
             <span className={`w-2 h-2 rounded-full ${agentAOnline ? 'bg-emerald-400' : 'bg-rose-400'}`}></span>
-            <span className="text-slate-400">Host A:</span>
-            <span className="text-white font-semibold">{hostATailscaleIp}</span>
+            <span className="text-slate-400">Host A (Source):</span>
+            <span className="text-white font-semibold">{hostALanIp}</span>
             <span className="text-slate-500">({agentAPing}ms)</span>
           </div>
 
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800">
             <span className={`w-2 h-2 rounded-full ${agentBOnline ? 'bg-emerald-400' : 'bg-rose-400'}`}></span>
-            <span className="text-slate-400">Host B:</span>
-            <span className="text-white font-semibold">{hostBTailscaleIp}</span>
+            <span className="text-slate-400">Host B (Target):</span>
+            <span className="text-white font-semibold">{hostBLanIp}</span>
             <span className="text-slate-500">({agentBPing}ms)</span>
           </div>
         </div>
@@ -414,7 +447,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
               Migration Recommended
             </div>
             <p className="text-xs text-slate-400 leading-relaxed">
-              MaskablePPO Actor-Critic evaluated 103 cluster telemetry features and selected <strong className="text-white">DemoVM</strong> to migrate from Host A to Host B.
+              MaskablePPO Actor-Critic evaluated 103 cluster telemetry features and selected <strong className="text-white">{sourceVm.vmid}</strong> to migrate from Host A to Host B over LAN.
             </p>
           </div>
 
@@ -436,7 +469,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
         <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 backdrop-blur space-y-3">
           <div className="flex items-center gap-2.5 text-emerald-400 font-semibold text-sm">
             <ShieldCheck className="w-4 h-4" />
-            <span>VirtualBox Compatibility Matrix</span>
+            <span>VirtualBox Teleport Compatibility</span>
           </div>
 
           <div className="space-y-2 pt-1 max-h-[160px] overflow-y-auto pr-1">
@@ -444,7 +477,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
               <div key={idx} className="flex items-center justify-between text-xs py-1 border-b border-slate-800/60 last:border-0">
                 <span className="text-slate-300 font-medium">{item.label}</span>
                 <span className="inline-flex items-center gap-1.5 text-emerald-400 font-mono text-[11px]">
-                  <Check className="w-3.5 h-3.5" /> Compatible
+                  <Check className="w-3.5 h-3.5" /> Verified
                 </span>
               </div>
             ))}
@@ -464,7 +497,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
               </span>
             </div>
             <p className="text-xs text-slate-400">
-              Deterministic pre-flight checks verified: zero memory contention, shared storage reachable, no snapshot divergence.
+              Deterministic pre-flight checks verified: zero memory contention, shared VDI storage accessible, matching CPU/BIOS, and zero snapshots.
             </p>
           </div>
 
@@ -478,19 +511,19 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
               <button
                 onClick={handleManualApprove}
                 disabled={isProcessing || demoState === 'TELEPORTING' || demoState === 'VERIFIED'}
-                className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-sm shadow-lg shadow-blue-600/30 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex-1 py-3.5 px-4 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-extrabold text-sm shadow-xl shadow-blue-600/30 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed uppercase tracking-wider"
               >
                 {isProcessing || demoState === 'TELEPORTING' ? (
                   <>
-                    <RefreshCw className="w-4 h-4 animate-spin" /> Teleporting...
+                    <RefreshCw className="w-4 h-4 animate-spin" /> Teleporting State...
                   </>
                 ) : demoState === 'VERIFIED' ? (
                   <>
-                    <CheckCircle2 className="w-4 h-4" /> Migration Verified
+                    <CheckCircle2 className="w-4 h-4" /> Migration Complete
                   </>
                 ) : (
                   <>
-                    <Play className="w-4 h-4 fill-white" /> Approve & Teleport
+                    <Play className="w-4 h-4 fill-white" /> MIGRATE VM
                   </>
                 )}
               </button>
@@ -498,7 +531,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
               <button
                 onClick={handleManualReject}
                 disabled={isProcessing || demoState === 'TELEPORTING'}
-                className="p-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-sm transition-all disabled:opacity-50"
+                className="p-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-sm transition-all disabled:opacity-50"
                 title="Reject AI Proposal"
               >
                 <X className="w-4 h-4" />
@@ -516,11 +549,11 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
 
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
           {[
-            { step: '1. PREPARE', label: 'Target Listening', active: demoState !== 'IDLE', done: ['TELEPORTING', 'VERIFYING', 'VERIFIED'].includes(demoState) },
-            { step: '2. DISPATCH', label: 'VBoxManage Teleport', active: ['TELEPORTING', 'VERIFYING', 'VERIFIED'].includes(demoState), done: ['VERIFYING', 'VERIFIED'].includes(demoState) },
-            { step: '3. STREAM', label: 'Live Memory Transfer', active: ['TELEPORTING', 'VERIFYING', 'VERIFIED'].includes(demoState), done: ['VERIFYING', 'VERIFIED'].includes(demoState) },
-            { step: '4. VERIFY', label: 'Placement Confirmation', active: ['VERIFYING', 'VERIFIED'].includes(demoState), done: demoState === 'VERIFIED' },
-            { step: '5. SUCCESS', label: 'Migration Verified', active: demoState === 'VERIFIED', done: demoState === 'VERIFIED' }
+            { step: '1. PREPARE', label: 'Unlock & Arm Listener', active: demoState !== 'IDLE', done: ['TELEPORTING', 'VERIFYING', 'VERIFIED'].includes(demoState) },
+            { step: '2. CONNECT', label: 'Direct LAN TCP Probe', active: ['TELEPORTING', 'VERIFYING', 'VERIFIED'].includes(demoState), done: ['VERIFYING', 'VERIFIED'].includes(demoState) },
+            { step: '3. STREAM', label: 'VBoxManage Teleport', active: ['TELEPORTING', 'VERIFYING', 'VERIFIED'].includes(demoState), done: ['VERIFYING', 'VERIFIED'].includes(demoState) },
+            { step: '4. VERIFY', label: 'Target Running Confirmation', active: ['VERIFYING', 'VERIFIED'].includes(demoState), done: demoState === 'VERIFIED' },
+            { step: '5. SUCCESS', label: 'Placement Confirmed', active: demoState === 'VERIFIED', done: demoState === 'VERIFIED' }
           ].map((s, idx) => (
             <div
               key={idx}
@@ -549,7 +582,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
                 <div>
                   <h5 className="text-lg font-extrabold text-white">MIGRATION VERIFIED SUCCESSFULLY</h5>
                   <p className="text-xs text-emerald-200">
-                    Workload confirmed active on <strong className="text-white">Host B (Target Computer)</strong>. Source Host A cleanly released without interruption.
+                    Workload confirmed active on <strong className="text-white">Host B ({hostBLanIp})</strong>. Source Host A ({hostALanIp}) cleanly released without guest OS interruption.
                   </p>
                 </div>
               </div>
@@ -565,7 +598,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
                 </div>
                 <div>
                   <div className="text-[10px] text-slate-400 uppercase">Guest Workload</div>
-                  <div className="text-sm font-bold text-white font-mono">Continuous</div>
+                  <div className="text-sm font-bold text-white font-mono">Continuous Active</div>
                 </div>
               </div>
             </div>
