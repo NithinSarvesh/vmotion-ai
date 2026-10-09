@@ -22,13 +22,15 @@ class Settings(BaseSettings):
     ENABLE_HUMAN_APPROVAL: bool = True       # Mandatory: AI cannot execute without human approval
     ENABLE_AUTONOMOUS_MODE: bool = False     # Strictly false by default
     
-    # Oracle VirtualBox Live Teleportation Parameters
+    # Oracle VirtualBox Migration Parameters (Cold OVA & Legacy Teleport)
+    VBOX_MIGRATION_MODE: Literal["cold_ova", "teleport"] = "cold_ova"
     VBOX_MANAGE_PATH: str = r"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
     VBOX_HOST_A_URL: str = "http://127.0.0.1:8001"
     VBOX_HOST_B_URL: str = "http://192.168.1.101:8001"
     VBOX_AGENT_SECRET: str = "vmotion-vbox-secret"
     VBOX_TELEPORT_PORT: int = 60050
-    VBOX_SHARED_STORAGE_PATH: str = ""
+    VBOX_SHARED_STORAGE_PATH: str = r"C:\VMotionShared"
+    VBOX_STAGING_PATH: str = r"C:\VMotionStaging"
     VBOX_DEMO_VM_NAME: str = "DemoVM"
     VBOX_TARGET_VM_NAME: str = "VMotion - demo target"
 

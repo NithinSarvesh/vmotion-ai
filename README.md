@@ -128,34 +128,65 @@ The cloud control plane will be available at:
 
 ---
 
-### Option B: Connecting Physical Laptops (Host A & Host B)
+### Option B: Connecting Two Physical Windows Laptops (Real Cold OVA Migration)
+
+VMotion AI executes **Real Cold / Offline VM Migration** across two physical Windows laptops connected over a mobile phone hotspot or local LAN. The VM is powered off gracefully on Host A, exported as an Open Virtualization Appliance (OVA), transferred directly over a Windows SMB share with SHA-256 integrity verification, imported into Oracle VirtualBox on Host B, and booted headlessly. Zero cloud data relay occurs.
 
 #### Prerequisites on each physical laptop:
-1. Install [Oracle VirtualBox 7.x](https://www.virtualbox.org/).
-2. Install [Tailscale](https://tailscale.com/) and run `tailscale up` to join your private network.
-3. Python 3.11 with `pip install -r vmotion-agent/requirements.txt`.
+1. Connect both laptops to the **SAME mobile phone hotspot** or local Wi-Fi.
+2. Install [Oracle VirtualBox 7.x](https://www.virtualbox.org/).
+3. Python 3.10+ installed (`pip install -r vmotion-agent/requirements.txt`).
+4. On Host A: have your real VM (e.g. `VMotion-Demo` or Ubuntu guest) registered in VirtualBox.
+5. On Host B: **no VM pre-creation is needed**. The agent dynamically imports the appliance as `VMotion-Migrated-<job-id>`.
 
-#### 1. On Laptop A (Source Host):
+---
+
+#### Step 1: Launch Host A (Source Laptop)
+Open PowerShell as **Administrator** and run:
 ```powershell
-$env:CLOUD_GATEWAY_URL="wss://your-cloud-control-plane/ws/agent"
-$env:HOST_ID="vbox-host-a"
-$env:AGENT_SECRET="your-secret-agent-token"
-$env:VBOX_SHARED_STORAGE_PATH="C:\shared_vdi"
-
-python vmotion-agent/agent.py
+.\scripts\setup_host_a_source.ps1
 ```
+The script will:
+- Verify Administrator elevation and VirtualBox installation.
+- Securely prompt for the Render `GATEWAY_AGENT_TOKEN` (never logged or printed).
+- Create and share `C:\VMotionShared` via Windows SMB so Host B can read it directly.
+- Auto-discover your hotspot/LAN IP address.
+- Launch the VMotion Agent connecting outbound to the Render control plane.
 
-#### 2. On Laptop B (Target Host):
+Take note of the Host A LAN IP shown on the screen (e.g., `172.16.0.2` or `192.168.43.15`).
+
+---
+
+#### Step 2: Launch Host B (Target Laptop / Friend's Laptop)
+Open PowerShell as **Administrator** and run:
 ```powershell
-$env:CLOUD_GATEWAY_URL="wss://your-cloud-control-plane/ws/agent"
-$env:HOST_ID="vbox-host-b"
-$env:AGENT_SECRET="your-secret-agent-token"
-$env:VBOX_SHARED_STORAGE_PATH="C:\shared_vdi"
-
-python vmotion-agent/agent.py
+.\scripts\setup_host_b_target.ps1 -HostAIp "<Host A LAN IP>"
 ```
+The script will:
+- Verify Administrator elevation and VirtualBox installation.
+- Securely prompt for the Render `GATEWAY_AGENT_TOKEN`.
+- Initialize local staging directory `C:\VMotionStaging`.
+- Verify network reachability and access to Host A's SMB share (`\\<HostA-LAN>\VMotionShared`).
+- Launch the VMotion Agent connecting outbound to the Render control plane.
 
-Both agents will immediately authenticate and register over outbound WebSocket, report their Tailscale `100.x.y.z` IP addresses, and begin streaming live hardware telemetry to the cloud control plane.
+---
+
+#### Step 3: Trigger Migration from the Cloud Web Dashboard
+1. Open your public Render control plane URL (or `http://localhost:8000`).
+2. Navigate to the **Live Demo** section. Both physical laptops will show as **ONLINE** with real-time LAN IP addresses and hardware metrics.
+3. The PPO V5 decision engine will evaluate 103 telemetry dimensions and recommend migrating the VM to Host B.
+4. The Deterministic Safety Gate will validate all 16 fail-closed safety checks.
+5. Click **`[MIGRATE VM]`**.
+6. Watch the real-time progression across all 9 stages:
+   1. **`PREFLIGHT`**: Storage quotas and hypervisor readiness checks.
+   2. **`SOURCE SHUTDOWN`**: Graceful guest ACPI shutdown (fail-closed on timeout).
+   3. **`EXPORT`**: `VBoxManage export` packages VM into `C:\VMotionShared\*.ova` and calculates SHA-256 digest.
+   4. **`TRANSFER`**: Host B copies package across LAN SMB into `C:\VMotionStaging`.
+   5. **`CHECKSUM VERIFIED`**: SHA-256 verified on destination; corrupted files are quarantined immediately.
+   6. **`IMPORT`**: `VBoxManage import` registers appliance as `VMotion-Migrated-<job-id>` (idempotent).
+   7. **`DESTINATION STARTED`**: Host B powers on imported VM headlessly.
+   8. **`VERIFY`**: Hypervisor confirms VM is running with intact guest health.
+   9. **`SUCCESS`**: Total migration metrics recorded in append-only forensic audit log.
 
 ---
 
@@ -163,11 +194,21 @@ Both agents will immediately authenticate and register over outbound WebSocket, 
 
 To run the complete automated test suite:
 ```powershell
-$env:PYTHONPATH="backend"
 .\.venv\Scripts\pytest.exe -v backend/tests
 ```
 
-### Verified Test Areas (117 Tests Passing):
+### Verified Test Areas (151 Tests Passing, 100% Pass Rate):
+- **VirtualBox Cold OVA Migration**: `backend/tests/test_virtualbox_cold_migration.py` (16 tests)
+  - Preflight disk space quota failure and validation
+  - Graceful ACPI guest shutdown timeout and success
+  - Appliance export failure and SHA-256 cryptographic calculation
+  - Direct LAN SMB transfer failure and local staging copy
+  - Checksum mismatch detection and corrupted file quarantine (`.corrupt`)
+  - Duplicate job request rejection (idempotency protection)
+  - Appliance import failure and dynamic registration
+  - Headless VM start failure handling
+  - Destination running health verification
+  - Full end-to-end 9-stage orchestration in `VirtualBoxProvider`
 - **Cloud Agent Gateway**: `backend/tests/test_agent_gateway.py` (7 tests)
   - Agent outbound registration & session creation
   - Heartbeat freshness and timeout detection
@@ -176,19 +217,22 @@ $env:PYTHONPATH="backend"
   - Offline agent error handling (`AgentOfflineError`)
   - Request timeout enforcement (`AgentCommandTimeoutError`)
   - Disconnect unregistration and future cleanup
-- **VirtualBox Provider**: `backend/tests/test_virtualbox_provider.py` (8 tests)
+- **VirtualBox Provider & Parser**: `backend/tests/test_virtualbox_provider.py` (8 tests)
   - VBoxManage path discovery and version validation
   - Machine-readable `showvminfo` output parsing
   - Target compatibility matrix checking with snapshot absence verification
   - Pre-flight teleport target receiver configuration via Agent Gateway RPC
-  - Asynchronous teleportation command dispatch over Tailscale overlay
-  - Post-teleport placement verification via remote agent
+  - Asynchronous command dispatch over Agent Gateway
+  - Post-migration placement verification via remote agent
 - **VirtualBox Host Agent**: `backend/tests/test_virtualbox_agent.py` (6 tests)
   - Secret token authentication
-  - Live hardware metrics & Tailscale IP reporting (`psutil`)
+  - Live hardware metrics & LAN IP reporting (`psutil`)
   - Machine inventory reporting
   - Target teleporter pre-warming
-  - Live teleportation dispatch
+- **VirtualBox Live Demo & LAN**: `backend/tests/test_virtualbox_live_demo.py` (8 tests)
+  - LAN IP discovery and gateway reporting
+  - Direct P2P routing
+  - Locked VM recovery
 - **Observation Contract & PPO Model**: `backend/tests/test_observation_adapter.py`, `backend/tests/test_observation_spec.py`
   - 103-feature normalization strict adherence in $[-1, 1]$
   - Model forward pass output distribution
@@ -207,3 +251,4 @@ $env:PYTHONPATH="backend"
 - **Project**: VMotion AI — Reinforcement-Learning-Driven Virtual Machine Migration Control Plane
 - **Evaluation**: DA1 Evaluation / Capstone Project
 - **Institution**: **Vellore Institute of Technology (VIT), Chennai, Tamil Nadu, India**
+

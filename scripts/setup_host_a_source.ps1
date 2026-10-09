@@ -1,7 +1,7 @@
 # ==============================================================================
 # VMotion AI - Host A (Source Laptop) Automated Setup & Agent Launcher
 # Connects to Public Cloud Control Plane over Outbound WSS
-# Streams Teleportation P2P over Phone Hotspot / LAN on TCP Port 60050
+# Real Cold / Offline VM Migration (OVA Export & LAN SMB Sharing)
 # ==============================================================================
 
 param(
@@ -16,7 +16,7 @@ $ErrorActionPreference = "Stop"
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "   VMOTION AI - HOST A (SOURCE LAPTOP) SETUP" -ForegroundColor Cyan
-Write-Host "   P2P Direct LAN Teleportation Data Plane" -ForegroundColor Cyan
+Write-Host "   Real Cold / Offline VM Migration (OVA Appliance Export)" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -163,7 +163,7 @@ Write-Host "=================================================================" -
 Write-Host ""
 Write-Host ">> Give this info to Host B (Friend's Laptop):" -ForegroundColor Yellow
 Write-Host "   Host A LAN IP:  $lanIp" -ForegroundColor Yellow
-Write-Host "   SMB Disk Share: \\$lanIp\$shareName\VMotion-Demo.vdi" -ForegroundColor Yellow
+Write-Host "   SMB Share Path: \\$lanIp\$shareName" -ForegroundColor Yellow
 Write-Host ""
 
 # 10. Set Agent Environment & Launch
@@ -175,6 +175,7 @@ $env:VMOTION_HOST_IP = $lanIp
 $env:CLOUD_GATEWAY_URL = $GatewayUrl
 $env:VMOTION_SHARED_STORAGE = $SharedDir
 $env:VBOX_MANAGE_PATH = $vboxPath
+$env:VBOX_MIGRATION_MODE = "cold_ova"
 $env:VMOTION_TELEPORT_PORT = [string]$TeleportPort
 
 Write-Host "Starting VMotion Agent for Host A..." -ForegroundColor Cyan

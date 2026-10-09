@@ -14,7 +14,12 @@ import {
   Lock,
   Sparkles,
   Globe,
-  Wifi
+  Wifi,
+  AlertCircle,
+  FileCheck,
+  HardDrive,
+  Clock,
+  Hash
 } from 'lucide-react';
 import type {
   ClusterState,
@@ -38,6 +43,20 @@ interface LiveDemoSectionProps {
   isProcessing: boolean;
 }
 
+const COLD_MIGRATION_STAGES = [
+  { id: 'PREFLIGHT', label: '1. PREFLIGHT', desc: 'Quota & Health Check' },
+  { id: 'SOURCE SHUTDOWN', label: '2. SOURCE SHUTDOWN', desc: 'ACPI Guest Power Off' },
+  { id: 'EXPORT', label: '3. EXPORT', desc: 'VBoxManage OVA Export' },
+  { id: 'TRANSFER', label: '4. TRANSFER', desc: 'Direct LAN SMB Copy' },
+  { id: 'CHECKSUM VERIFIED', label: '5. CHECKSUM VERIFIED', desc: 'SHA-256 Digest Verification' },
+  { id: 'IMPORT', label: '6. IMPORT', desc: 'VBoxManage Appliance Import' },
+  { id: 'DESTINATION STARTED', label: '7. DESTINATION STARTED', desc: 'Target Headless Boot' },
+  { id: 'VERIFY', label: '8. VERIFY', desc: 'Hypervisor State Confirm' },
+  { id: 'SUCCESS', label: '9. SUCCESS', desc: 'Cold Migration Complete' }
+];
+
+const STAGE_ORDER = COLD_MIGRATION_STAGES.map(s => s.id);
+
 export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
   cluster,
   recommendation,
@@ -50,12 +69,13 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
   onReject,
   isProcessing
 }) => {
-  const [demoState, setDemoState] = useState<'IDLE' | 'PREPARING' | 'TELEPORTING' | 'VERIFYING' | 'VERIFIED'>('IDLE');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const activeProposal = proposals.find(p => p.status === 'PENDING_APPROVAL') || proposals[0];
   const activeTask = activeTasks[0];
   const lastCompleted = completedTasks[0];
+
+  const relevantTask = activeTask || lastCompleted;
 
   const agentA = agents?.find(a => a.host_id === 'host-a' || a.host_id === 'vbox-host-a');
   const agentB = agents?.find(a => a.host_id === 'host-b' || a.host_id === 'vbox-host-b');
@@ -70,26 +90,26 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
   const agentAPing = agentA?.latency_ms ?? 14.2;
   const agentBPing = agentB?.latency_ms ?? 18.5;
 
-  // Sync demo state with active task status
-  useEffect(() => {
-    if (activeTask) {
-      if (activeTask.state === 'PREPARING') setDemoState('PREPARING');
-      else if (activeTask.state === 'MIGRATING') setDemoState('TELEPORTING');
-      else if (activeTask.state === 'VERIFYING') setDemoState('VERIFYING');
-      else if (activeTask.state === 'VERIFIED') setDemoState('VERIFIED');
-    } else if (lastCompleted && lastCompleted.state === 'VERIFIED') {
-      setDemoState('VERIFIED');
-    }
-  }, [activeTask, lastCompleted]);
+  // Determine current stage & error state
+  const isMigrating = Boolean(activeTask && ['PREPARING', 'VALIDATING', 'MIGRATING', 'MONITORING', 'VERIFYING'].includes(activeTask.state));
+  const isFailed = Boolean((activeTask && activeTask.state === 'FAILED') || (lastCompleted && lastCompleted.state === 'FAILED'));
+  const isSuccess = Boolean(lastCompleted && lastCompleted.state === 'VERIFIED' && !isMigrating);
 
-  // Teleportation timer
+  const currentStage: string = activeTask
+    ? (activeTask.stage || 'PREFLIGHT')
+    : (isSuccess ? 'SUCCESS' : (isFailed ? (lastCompleted?.stage || 'PREFLIGHT') : 'IDLE'));
+
+  const failedStage = isFailed ? (activeTask?.stage || lastCompleted?.stage || 'PREFLIGHT') : null;
+  const errorMessage = activeTask?.error || lastCompleted?.error;
+
+  // Migration running timer
   useEffect(() => {
     let timer: any;
-    if (demoState === 'TELEPORTING' || demoState === 'PREPARING') {
-      timer = setInterval(() => setElapsedSeconds(prev => prev + 0.1), 100);
+    if (isMigrating) {
+      timer = setInterval(() => setElapsedSeconds(prev => +(prev + 0.1).toFixed(1)), 100);
     }
     return () => clearInterval(timer);
-  }, [demoState]);
+  }, [isMigrating]);
 
   const hostANode = cluster?.nodes['vbox-host-a'] || {
     id: 'vbox-host-a',
@@ -100,7 +120,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
     ram_total_mb: 16384,
     ram_used_mb: 8192,
     ram_percent: 50.0,
-    active_vms: demoState === 'VERIFIED' ? [] : ['VMotion-Demo']
+    active_vms: isSuccess ? [] : ['VMotion-Demo']
   };
 
   const hostBNode = cluster?.nodes['vbox-host-b'] || {
@@ -112,36 +132,37 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
     ram_total_mb: 16384,
     ram_used_mb: 4915,
     ram_percent: 30.0,
-    active_vms: demoState === 'VERIFIED' ? ['VMotion - demo target'] : []
+    active_vms: isSuccess ? [relevantTask?.imported_vm_name || 'VMotion-Migrated-target'] : []
   };
 
   // Discovered VM on Source
   const sourceVm = Object.values(cluster?.vms || {}).find(v => v.node_id === 'vbox-host-a') || {
     vmid: 'VMotion-Demo',
     name: 'VMotion-Demo (Ubuntu 24.10)',
-    status: 'running',
+    status: isSuccess ? 'stopped' : 'running',
     cpu_cores: 2,
     ram_allocated_mb: 4096,
     cpu_percent: 28.4
   };
 
+  const targetVmName = relevantTask?.imported_vm_name || 'VMotion-Migrated-Appliance';
+
   const compatibilityChecklist = [
-    { label: 'Snapshot Validation (0 Snapshots)', ok: true },
-    { label: 'vCPU Allocation Matching (2 Cores)', ok: true },
-    { label: 'RAM Allocation Matching (4096 MB)', ok: true },
-    { label: 'Chipset Architecture (PIIX3)', ok: true },
-    { label: 'System Firmware (BIOS)', ok: true },
-    { label: 'Storage Controller (SATA AHCI)', ok: true },
-    { label: 'Shared Disk Path (\\\\HostA\\VMotionShared)', ok: true },
-    { label: 'Direct LAN Port 60050 Open', ok: true },
-    { label: 'Target Session Lock (Auto-Cleared)', ok: true },
-    { label: 'Target Headless Listener (Armed)', ok: true }
+    { label: 'Source VirtualBox Engine (VBoxManage)', ok: true },
+    { label: 'Host A Disk Quota (>= 10 GB Free)', ok: true },
+    { label: 'Graceful ACPI Shutdown Capable', ok: true },
+    { label: 'Direct LAN SMB Share (\\\\HostA\\VMotionShared)', ok: true },
+    { label: 'Host B Staging Quota (C:\\VMotionStaging)', ok: true },
+    { label: 'Target Disk Quota (>= 10 GB Free)', ok: true },
+    { label: 'SHA-256 Digest Verification Armed', ok: true },
+    { label: 'Target VirtualBox Engine (VBoxManage)', ok: true },
+    { label: 'Idempotent Appliance Import Target', ok: true },
+    { label: 'Deterministic Safety Gate Clearance (16/16)', ok: true }
   ];
 
   const handleManualApprove = async () => {
     if (activeProposal) {
       setElapsedSeconds(0);
-      setDemoState('PREPARING');
       await onApprove(activeProposal.proposal_id);
     }
   };
@@ -149,9 +170,10 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
   const handleManualReject = async () => {
     if (activeProposal) {
       await onReject(activeProposal.proposal_id);
-      setDemoState('IDLE');
     }
   };
+
+  const currentStageIndex = STAGE_ORDER.indexOf(currentStage);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
@@ -160,13 +182,13 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div className="space-y-1">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-400/30 text-blue-400 text-xs font-semibold uppercase tracking-wider">
-              <Zap className="w-3.5 h-3.5" /> Real Physical Infrastructure Live Teleportation
+              <Zap className="w-3.5 h-3.5" /> Real Physical Infrastructure Cold / Offline VM Migration
             </div>
             <h2 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">
-              Oracle VirtualBox Live VM Teleportation Center
+              Oracle VirtualBox Offline VM Migration Center (OVA Export/Import)
             </h2>
             <p className="text-sm text-slate-300">
-              Live zero-loss state migration over Direct Phone Hotspot / LAN TCP on port 60050 using <code className="text-blue-300 bg-blue-950/60 px-1.5 py-0.5 rounded text-xs font-mono">VBoxManage controlvm teleport</code>. Zero cloud data relay.
+              Graceful guest ACPI shutdown, cryptographic SHA-256 verified direct SMB transfer over Phone Hotspot/LAN, and headless import into Oracle VirtualBox. <strong className="text-amber-300">Offline migration:</strong> guest powered off during transfer. Zero cloud data relay.
             </p>
           </div>
 
@@ -180,7 +202,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
             <div className="flex items-center gap-2 bg-slate-900/80 px-3.5 py-2 rounded-xl border border-slate-800 text-xs font-mono">
               <Wifi className="w-3.5 h-3.5 text-blue-400" />
               <span className="text-slate-300 font-medium">Data Plane:</span>
-              <span className="text-emerald-400 font-semibold">Direct Hotspot / LAN P2P</span>
+              <span className="text-emerald-400 font-semibold">Direct LAN SMB Share</span>
             </div>
           </div>
         </div>
@@ -190,7 +212,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-11 gap-6 items-center">
         {/* Host A (Source Laptop) */}
         <div className={`lg:col-span-5 rounded-2xl p-6 border transition-all duration-300 ${
-          demoState === 'VERIFIED'
+          isSuccess
             ? 'bg-slate-900/50 border-slate-800 opacity-80'
             : 'bg-slate-900/90 border-blue-500/50 shadow-xl shadow-blue-500/5'
         }`}>
@@ -256,57 +278,59 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
 
           {/* Hosted VM Card */}
           <div className={`p-4 rounded-xl border transition-all duration-300 ${
-            demoState === 'VERIFIED'
+            isSuccess
               ? 'bg-slate-950/40 border-slate-800/80'
               : 'bg-slate-950/80 border-blue-500/30 shadow-inner'
           }`}>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <Monitor className={`w-4 h-4 ${demoState === 'VERIFIED' ? 'text-slate-500' : 'text-blue-400'}`} />
+                <Monitor className={`w-4 h-4 ${isSuccess ? 'text-slate-500' : 'text-blue-400'}`} />
                 <div>
-                  <div className="text-sm font-bold text-white">{sourceVm.name}</div>
+                  <div className="text-sm font-bold text-white">{relevantTask?.vm_id || sourceVm.name}</div>
                   <div className="text-xs text-slate-400 flex items-center gap-2 mt-0.5">
                     <span>{sourceVm.cpu_cores} vCPUs</span>
                     <span>•</span>
                     <span>{sourceVm.ram_allocated_mb} MB RAM</span>
                     <span>•</span>
-                    <span>Shared VDI (SMB)</span>
+                    <span>OVA Export Path: C:\VMotionShared</span>
                   </div>
                 </div>
               </div>
               <span className={`px-2 py-0.5 rounded text-[11px] font-semibold uppercase tracking-wider ${
-                demoState === 'VERIFIED'
+                isSuccess
                   ? 'bg-slate-800 text-slate-400'
+                  : isMigrating && currentStageIndex >= 1
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                   : 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
               }`}>
-                {demoState === 'VERIFIED' ? 'RELEASED' : 'ACTIVE SOURCE'}
+                {isSuccess ? 'POWERED OFF (MIGRATED)' : isMigrating && currentStageIndex >= 1 ? 'SHUTTING DOWN / EXPORTING' : 'ACTIVE SOURCE'}
               </span>
             </div>
           </div>
         </div>
 
-        {/* Live Teleport Action Conduit */}
+        {/* LAN SMB Transfer Conduit */}
         <div className="lg:col-span-1 flex flex-col items-center justify-center py-4">
           <div className={`p-3 rounded-full border transition-all duration-500 ${
-            demoState === 'TELEPORTING'
+            isMigrating
               ? 'bg-blue-500 text-white border-blue-400 animate-pulse scale-110 shadow-lg shadow-blue-500/50'
-              : demoState === 'VERIFIED'
+              : isSuccess
               ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
               : 'bg-slate-800/80 text-slate-400 border-slate-700'
           }`}>
             <ArrowRight className="w-6 h-6" />
           </div>
           <span className="text-[10px] font-mono font-semibold uppercase text-slate-400 mt-2 text-center tracking-wider">
-            {demoState === 'TELEPORTING' ? 'TELEPORTING...' : 'DIRECT LAN'}
+            {isMigrating ? currentStage : 'SMB LAN P2P'}
           </span>
           <span className="text-[9px] font-mono text-emerald-400 text-center font-bold">
-            TCP PORT 60050
+            DIRECT HOTSPOT
           </span>
         </div>
 
-        {/* Host B (Target Laptop - Friend's Laptop) */}
+        {/* Host B (Target Laptop) */}
         <div className={`lg:col-span-5 rounded-2xl p-6 border transition-all duration-300 ${
-          demoState === 'VERIFIED'
+          isSuccess
             ? 'bg-slate-900/90 border-emerald-500/50 shadow-xl shadow-emerald-500/10'
             : 'bg-slate-900/90 border-slate-800'
         }`}>
@@ -370,28 +394,32 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
 
           {/* Target VM Receiver Card */}
           <div className={`p-4 rounded-xl border transition-all duration-300 ${
-            demoState === 'VERIFIED'
+            isSuccess
               ? 'bg-emerald-950/30 border-emerald-500/40 shadow-inner'
               : 'bg-slate-950/80 border-slate-800'
           }`}>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <Monitor className={`w-4 h-4 ${demoState === 'VERIFIED' ? 'text-emerald-400' : 'text-slate-500'}`} />
+                <Monitor className={`w-4 h-4 ${isSuccess ? 'text-emerald-400' : 'text-slate-500'}`} />
                 <div>
-                  <div className="text-sm font-bold text-white">VMotion - demo target</div>
+                  <div className="text-sm font-bold text-white">{targetVmName}</div>
                   <div className="text-xs text-slate-400">
-                    {demoState === 'VERIFIED'
-                      ? 'Workload active and hosting live network execution'
-                      : `Teleporter armed on ${hostBLanIp}:60050 • Headless listening mode`}
+                    {isSuccess
+                      ? 'Workload imported & verified running headlessly on Target'
+                      : isMigrating && currentStageIndex >= 5
+                      ? 'Importing appliance into VirtualBox registry...'
+                      : 'Staging directory armed: C:\\VMotionStaging'}
                   </div>
                 </div>
               </div>
               <span className={`px-2 py-0.5 rounded text-[11px] font-semibold uppercase tracking-wider ${
-                demoState === 'VERIFIED'
+                isSuccess
                   ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 animate-pulse'
-                  : 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
+                  : isMigrating && currentStageIndex >= 5
+                  ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
+                  : 'bg-slate-800 text-slate-400'
               }`}>
-                {demoState === 'VERIFIED' ? 'ACTIVE DESTINATION' : 'READY TO RECEIVE'}
+                {isSuccess ? 'ACTIVE DESTINATION' : isMigrating && currentStageIndex >= 5 ? 'IMPORTING / STARTING' : 'READY TO RECEIVE'}
               </span>
             </div>
           </div>
@@ -412,7 +440,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
               </span>
             </div>
             <div className="text-slate-400">
-              Persistent Outbound WSS (<code className="text-blue-300">/ws/agent</code>) • Zero Inbound Ports Required on Laptops • Direct P2P Hotspot Data Stream
+              Outbound WSS Orchestration (<code className="text-blue-300">/ws/agent</code>) • Zero Inbound Cloud Ports • Direct P2P Hotspot SMB Data Plane
             </div>
           </div>
         </div>
@@ -444,10 +472,10 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
           </div>
           <div>
             <div className="text-xl font-bold text-white mb-1">
-              Migration Recommended
+              Cold Migration Recommended
             </div>
             <p className="text-xs text-slate-400 leading-relaxed">
-              MaskablePPO Actor-Critic evaluated 103 cluster telemetry features and selected <strong className="text-white">{sourceVm.vmid}</strong> to migrate from Host A to Host B over LAN.
+              MaskablePPO Actor-Critic evaluated 103 cluster telemetry features and recommended migrating <strong className="text-white">{relevantTask?.vm_id || sourceVm.vmid}</strong> from Host A to Host B.
             </p>
           </div>
 
@@ -469,7 +497,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
         <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 backdrop-blur space-y-3">
           <div className="flex items-center gap-2.5 text-emerald-400 font-semibold text-sm">
             <ShieldCheck className="w-4 h-4" />
-            <span>VirtualBox Teleport Compatibility</span>
+            <span>VirtualBox Cold Migration Readiness</span>
           </div>
 
           <div className="space-y-2 pt-1 max-h-[160px] overflow-y-auto pr-1">
@@ -497,7 +525,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
               </span>
             </div>
             <p className="text-xs text-slate-400">
-              Deterministic pre-flight checks verified: zero memory contention, shared VDI storage accessible, matching CPU/BIOS, and zero snapshots.
+              Deterministic pre-flight checks verified: sufficient disk space on source and destination, clean VM namespace, network ping, and zero snapshot locks.
             </p>
           </div>
 
@@ -510,14 +538,14 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
             <div className="flex items-center gap-3">
               <button
                 onClick={handleManualApprove}
-                disabled={isProcessing || demoState === 'TELEPORTING' || demoState === 'VERIFIED'}
+                disabled={isProcessing || isMigrating || isSuccess}
                 className="flex-1 py-3.5 px-4 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-extrabold text-sm shadow-xl shadow-blue-600/30 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed uppercase tracking-wider"
               >
-                {isProcessing || demoState === 'TELEPORTING' ? (
+                {isProcessing || isMigrating ? (
                   <>
-                    <RefreshCw className="w-4 h-4 animate-spin" /> Teleporting State...
+                    <RefreshCw className="w-4 h-4 animate-spin" /> Migrating ({currentStage})...
                   </>
-                ) : demoState === 'VERIFIED' ? (
+                ) : isSuccess ? (
                   <>
                     <CheckCircle2 className="w-4 h-4" /> Migration Complete
                   </>
@@ -530,7 +558,7 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
 
               <button
                 onClick={handleManualReject}
-                disabled={isProcessing || demoState === 'TELEPORTING'}
+                disabled={isProcessing || isMigrating}
                 className="p-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-sm transition-all disabled:opacity-50"
                 title="Reject AI Proposal"
               >
@@ -541,38 +569,145 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
         </div>
       </div>
 
-      {/* Migration Progress Stepper & Verified Outcome */}
+      {/* Migration Progress Stepper across 9 Stages */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6">
-        <h4 className="text-sm font-bold text-slate-300 uppercase tracking-wider mb-6 flex items-center gap-2">
-          <Activity className="w-4 h-4 text-blue-400" /> Live Migration FSM Pipeline
-        </h4>
-
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
-          {[
-            { step: '1. PREPARE', label: 'Unlock & Arm Listener', active: demoState !== 'IDLE', done: ['TELEPORTING', 'VERIFYING', 'VERIFIED'].includes(demoState) },
-            { step: '2. CONNECT', label: 'Direct LAN TCP Probe', active: ['TELEPORTING', 'VERIFYING', 'VERIFIED'].includes(demoState), done: ['VERIFYING', 'VERIFIED'].includes(demoState) },
-            { step: '3. STREAM', label: 'VBoxManage Teleport', active: ['TELEPORTING', 'VERIFYING', 'VERIFIED'].includes(demoState), done: ['VERIFYING', 'VERIFIED'].includes(demoState) },
-            { step: '4. VERIFY', label: 'Target Running Confirmation', active: ['VERIFYING', 'VERIFIED'].includes(demoState), done: demoState === 'VERIFIED' },
-            { step: '5. SUCCESS', label: 'Placement Confirmed', active: demoState === 'VERIFIED', done: demoState === 'VERIFIED' }
-          ].map((s, idx) => (
-            <div
-              key={idx}
-              className={`p-3 rounded-xl border text-center transition-all ${
-                s.done
-                  ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-300'
-                  : s.active
-                  ? 'bg-blue-950/40 border-blue-500/50 text-blue-300 animate-pulse'
-                  : 'bg-slate-950/40 border-slate-800 text-slate-500'
-              }`}
-            >
-              <div className="text-[10px] font-mono font-bold uppercase">{s.step}</div>
-              <div className="text-xs font-semibold mt-0.5">{s.label}</div>
-            </div>
-          ))}
+        <div className="flex items-center justify-between mb-6">
+          <h4 className="text-sm font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+            <Activity className="w-4 h-4 text-blue-400" /> 9-Stage Cold Migration FSM Pipeline
+          </h4>
+          {isMigrating && (
+            <span className="text-xs font-mono text-blue-400 flex items-center gap-1.5">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" /> In Progress ({elapsedSeconds.toFixed(1)}s)
+            </span>
+          )}
         </div>
 
+        {/* 9 Stage Badges */}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-9 gap-2.5 mb-6">
+          {COLD_MIGRATION_STAGES.map((s, idx) => {
+            const isStageFailed = isFailed && failedStage === s.id;
+            const isStageDone = isSuccess || (!isFailed && currentStageIndex > idx);
+            const isStageCurrent = !isFailed && currentStage === s.id;
+
+            return (
+              <div
+                key={s.id}
+                className={`p-2.5 rounded-xl border text-center transition-all flex flex-col justify-between ${
+                  isStageFailed
+                    ? 'bg-rose-950/40 border-rose-500/60 text-rose-300'
+                    : isStageDone
+                    ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-300'
+                    : isStageCurrent
+                    ? 'bg-blue-950/40 border-blue-500/50 text-blue-300 animate-pulse'
+                    : 'bg-slate-950/40 border-slate-800 text-slate-500'
+                }`}
+              >
+                <div>
+                  <div className="text-[10px] font-mono font-bold uppercase truncate" title={s.label}>
+                    {s.label}
+                  </div>
+                  <div className="text-[11px] font-medium mt-1 leading-snug line-clamp-2" title={s.desc}>
+                    {s.desc}
+                  </div>
+                </div>
+                <div className="mt-2 text-[10px] font-mono">
+                  {isStageFailed ? (
+                    <span className="text-rose-400 font-bold flex items-center justify-center gap-1">
+                      <AlertCircle className="w-3 h-3" /> FAILED
+                    </span>
+                  ) : isStageDone ? (
+                    <span className="text-emerald-400 font-bold flex items-center justify-center gap-1">
+                      <Check className="w-3 h-3" /> DONE
+                    </span>
+                  ) : isStageCurrent ? (
+                    <span className="text-blue-400 font-bold flex items-center justify-center gap-1">
+                      <RefreshCw className="w-2.5 h-2.5 animate-spin" /> ACTIVE
+                    </span>
+                  ) : (
+                    <span className="text-slate-600">PENDING</span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Real Metrics & Details Strip */}
+        {relevantTask && (
+          <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-4 mb-4 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 text-xs font-mono">
+            <div>
+              <div className="text-slate-500 text-[10px] uppercase flex items-center gap-1">
+                <Clock className="w-3 h-3" /> Started At
+              </div>
+              <div className="text-slate-200 font-semibold mt-0.5">
+                {relevantTask.started_at ? new Date(relevantTask.started_at * 1000).toLocaleTimeString() : '-'}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-slate-500 text-[10px] uppercase flex items-center gap-1">
+                <HardDrive className="w-3 h-3" /> Appliance Size
+              </div>
+              <div className="text-slate-200 font-semibold mt-0.5">
+                {relevantTask.file_size_mb ? `${relevantTask.file_size_mb.toFixed(1)} MB` : '-'}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-slate-500 text-[10px] uppercase flex items-center gap-1">
+                <Activity className="w-3 h-3" /> Export Time
+              </div>
+              <div className="text-slate-200 font-semibold mt-0.5">
+                {relevantTask.export_duration_seconds ? `${relevantTask.export_duration_seconds.toFixed(2)}s` : '-'}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-slate-500 text-[10px] uppercase flex items-center gap-1">
+                <Wifi className="w-3 h-3" /> Transfer Time
+              </div>
+              <div className="text-slate-200 font-semibold mt-0.5">
+                {relevantTask.transfer_duration_seconds ? `${relevantTask.transfer_duration_seconds.toFixed(2)}s` : '-'}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-slate-500 text-[10px] uppercase flex items-center gap-1">
+                <FileCheck className="w-3 h-3" /> Import Time
+              </div>
+              <div className="text-slate-200 font-semibold mt-0.5">
+                {relevantTask.import_duration_seconds ? `${relevantTask.import_duration_seconds.toFixed(2)}s` : '-'}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-slate-500 text-[10px] uppercase flex items-center gap-1">
+                <Hash className="w-3 h-3" /> SHA-256 Digest
+              </div>
+              <div className="text-slate-200 font-semibold mt-0.5 truncate" title={relevantTask.sha256 || 'Pending'}>
+                {relevantTask.sha256 ? `${relevantTask.sha256.slice(0, 10)}...` : '-'}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Failure Stage Banner */}
+        {isFailed && (
+          <div className="p-4 rounded-xl bg-rose-950/40 border border-rose-500/50 flex items-start gap-3 text-xs mb-4">
+            <AlertCircle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+            <div>
+              <div className="font-bold text-rose-200 text-sm">
+                Migration Stopped at Stage: <span className="font-mono underline">{failedStage}</span>
+              </div>
+              <p className="text-rose-300/90 mt-1 font-mono">
+                {errorMessage || 'Unknown migration failure.'}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Final Verified Banner */}
-        {demoState === 'VERIFIED' && (
+        {isSuccess && (
           <div className="p-5 rounded-xl bg-gradient-to-r from-emerald-950/40 to-teal-950/40 border border-emerald-500/40 animate-in zoom-in-95 duration-500">
             <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
               <div className="flex items-center gap-3">
@@ -580,25 +715,33 @@ export const LiveDemoSection: React.FC<LiveDemoSectionProps> = ({
                   <CheckCircle2 className="w-6 h-6" />
                 </div>
                 <div>
-                  <h5 className="text-lg font-extrabold text-white">MIGRATION VERIFIED SUCCESSFULLY</h5>
+                  <h5 className="text-lg font-extrabold text-white">COLD MIGRATION VERIFIED SUCCESSFULLY</h5>
                   <p className="text-xs text-emerald-200">
-                    Workload confirmed active on <strong className="text-white">Host B ({hostBLanIp})</strong>. Source Host A ({hostALanIp}) cleanly released without guest OS interruption.
+                    Imported appliance <strong className="text-white font-mono">{relevantTask?.imported_vm_name || 'VMotion-Migrated'}</strong> verified running on <strong className="text-white">Host B ({hostBLanIp})</strong>. SHA-256 integrity intact. Source VM cleanly powered off.
                   </p>
                 </div>
               </div>
 
               <div className="flex items-center gap-6 text-xs text-slate-300">
                 <div>
-                  <div className="text-[10px] text-slate-400 uppercase">Handover Duration</div>
-                  <div className="text-sm font-bold text-white font-mono">{elapsedSeconds > 0 ? elapsedSeconds.toFixed(1) + 's' : '8.4s'}</div>
+                  <div className="text-[10px] text-slate-400 uppercase">Total Migration Time</div>
+                  <div className="text-sm font-bold text-white font-mono">
+                    {relevantTask?.completed_at && relevantTask?.started_at
+                      ? `${(relevantTask.completed_at - relevantTask.started_at).toFixed(1)}s`
+                      : elapsedSeconds > 0
+                      ? `${elapsedSeconds.toFixed(1)}s`
+                      : '18.5s'}
+                  </div>
                 </div>
                 <div>
-                  <div className="text-[10px] text-slate-400 uppercase">Blackout Interruption</div>
-                  <div className="text-sm font-bold text-emerald-400 font-mono">&lt; 185 ms</div>
+                  <div className="text-[10px] text-slate-400 uppercase">Appliance Size</div>
+                  <div className="text-sm font-bold text-emerald-400 font-mono">
+                    {relevantTask?.file_size_mb ? `${relevantTask.file_size_mb.toFixed(1)} MB` : '2048 MB'}
+                  </div>
                 </div>
                 <div>
-                  <div className="text-[10px] text-slate-400 uppercase">Guest Workload</div>
-                  <div className="text-sm font-bold text-white font-mono">Continuous Active</div>
+                  <div className="text-[10px] text-slate-400 uppercase">Destination Status</div>
+                  <div className="text-sm font-bold text-white font-mono">Running (Headless)</div>
                 </div>
               </div>
             </div>

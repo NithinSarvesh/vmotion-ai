@@ -139,6 +139,14 @@ export interface MigrationTaskStatus {
   verified_at?: number;
   error?: string;
   verification_details?: Record<string, any>;
+  stage?: string;
+  file_size_bytes?: number;
+  file_size_mb?: number;
+  sha256?: string;
+  export_duration_seconds?: number;
+  transfer_duration_seconds?: number;
+  import_duration_seconds?: number;
+  imported_vm_name?: string;
 }
 
 export interface AuditEntry {

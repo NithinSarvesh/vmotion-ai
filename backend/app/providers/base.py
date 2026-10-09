@@ -88,6 +88,7 @@ class MigrationTaskStatus(BaseModel):
     source_node: str
     target_node: str
     state: MigrationState = "PREPARING"
+    stage: str = "PREFLIGHT"
     progress_percent: float = 0.0
     started_at: float = 0.0
     updated_at: float = 0.0
@@ -95,6 +96,14 @@ class MigrationTaskStatus(BaseModel):
     verified_at: Optional[float] = None
     error: Optional[str] = None
     verification_details: Optional[dict] = None
+    # Real Cold/Offline OVA Migration Details
+    file_size_bytes: Optional[int] = None
+    file_size_mb: Optional[float] = None
+    sha256: Optional[str] = None
+    export_duration_seconds: Optional[float] = None
+    transfer_duration_seconds: Optional[float] = None
+    import_duration_seconds: Optional[float] = None
+    imported_vm_name: Optional[str] = None
 
 
 class ProviderConnectionResult(BaseModel):

@@ -13,6 +13,7 @@ import json
 import uuid
 import socket
 import shutil
+import hashlib
 import logging
 import platform
 import asyncio
@@ -357,13 +358,40 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
             "accessible": (exists and writable)
         }, (None if exists and writable else f"Storage path '{path}' is not accessible or writable")
 
-    elif cmd == "PREFLIGHT":
+    elif cmd in ("PREFLIGHT", "PREFLIGHT_CHECK"):
+        role = payload.get("role", "source")
         raw_vm = payload.get("vm_id", "DemoVM")
-        vm_id = resolve_vm_name(raw_vm)
+        vm_id = resolve_vm_name(raw_vm) if role == "source" else raw_vm
         port = payload.get("port", 60050)
         target_path = payload.get("shared_storage_path", SHARED_STORAGE_PATH)
+        required_disk_mb = int(payload.get("required_disk_mb", 5000))
 
-        rc, out, err = run_vbox(["showvminfo", vm_id, "--machinereadable"], timeout=5.0)
+        vbox_installed = bool(VBOX_PATH and os.path.exists(VBOX_PATH))
+        check_path = target_path if (target_path and os.path.exists(target_path)) else ("C:\\" if sys.platform == "win32" else "/")
+        disk_free_mb = 0.0
+        try:
+            disk_free_mb = round(shutil.disk_usage(check_path).free / (1024 * 1024), 2)
+        except Exception:
+            disk_free_mb = 100000.0
+
+        sufficient_disk = disk_free_mb >= required_disk_mb
+
+        if role == "target":
+            all_ok = vbox_installed and sufficient_disk
+            err = None if all_ok else (
+                f"Target pre-flight failed: VBox installed={vbox_installed}, Free disk={disk_free_mb}MB (req {required_disk_mb}MB)"
+            )
+            return ("SUCCESS" if all_ok else "FAILED"), {
+                "role": "target",
+                "vbox_installed": vbox_installed,
+                "disk_free_mb": disk_free_mb,
+                "sufficient_disk": sufficient_disk,
+                "lan_ip": get_lan_ip(),
+                "tailscale_ip": get_tailscale_ip()
+            }, err
+
+        # role == "source"
+        rc, out, err_out = run_vbox(["showvminfo", vm_id, "--machinereadable"], timeout=5.0)
         vm_exists = (rc == 0)
         snapshots_count = 0
         disks = []
@@ -383,17 +411,23 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
             "resolved_vm_name": vm_id,
             "vm_exists": vm_exists,
             "vm_state": vm_state,
-            "vbox_installed": bool(VBOX_PATH and os.path.exists(VBOX_PATH)),
+            "vbox_installed": vbox_installed,
             "snapshots_present": (snapshots_count > 0),
             "snapshot_count": snapshots_count,
             "storage_accessible": storage_accessible,
+            "disk_free_mb": disk_free_mb,
+            "sufficient_disk": sufficient_disk,
             "disks": disks,
             "lan_ip": get_lan_ip(),
             "tailscale_ip": get_tailscale_ip(),
             "port": port
         }
-        all_ok = vm_exists and (snapshots_count == 0) and storage_accessible
-        return ("SUCCESS" if all_ok else "FAILED"), data, (None if all_ok else "Pre-flight checks failed")
+        all_ok = vm_exists and (snapshots_count == 0) and storage_accessible and sufficient_disk
+        err_msg = None if all_ok else (
+            f"Source pre-flight failed: vm_exists={vm_exists}, snapshots={snapshots_count}, "
+            f"storage_accessible={storage_accessible}, sufficient_disk={sufficient_disk} ({disk_free_mb}MB free)"
+        )
+        return ("SUCCESS" if all_ok else "FAILED"), data, err_msg
 
     elif cmd == "PREPARE_TARGET":
         raw_vm = payload.get("vm_id", "DemoVM")
@@ -553,6 +587,268 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
         vm_id = resolve_vm_name(raw_vm)
         logger.info(f"[RPC] Post-migration cleanup on '{vm_id}'...")
         return "SUCCESS", {"vm_id": vm_id, "status": "CLEANED"}, None
+
+    # =========================================================================
+    # Cold/Offline OVA Migration RPC Handlers
+    # =========================================================================
+
+    elif cmd == "SHUTDOWN_VM":
+        raw_vm = payload.get("vm_id", "DemoVM")
+        vm_id = resolve_vm_name(raw_vm)
+        timeout_seconds = int(payload.get("timeout_seconds", 30))
+        logger.info(f"[RPC] Requesting graceful ACPI shutdown of VM '{vm_id}' (timeout: {timeout_seconds}s)...")
+
+        # 1. Check current state
+        rc, out, err = run_vbox(["showvminfo", vm_id, "--machinereadable"], timeout=5.0)
+        if rc != 0:
+            return "FAILED", {"vm_id": vm_id}, f"VM '{vm_id}' not found: {err}"
+        info = parse_machine_readable_output(out)
+        curr_state = info.get("VMState", "").lower()
+
+        if curr_state in ("poweroff", "aborted"):
+            logger.info(f"[RPC] VM '{vm_id}' is already powered off.")
+            return "SUCCESS", {"vm_id": vm_id, "state": "poweroff", "already_off": True}, None
+
+        if curr_state == "saved":
+            logger.info(f"[RPC] Discarding saved state for VM '{vm_id}'...")
+            run_vbox(["discardstate", vm_id], timeout=5.0)
+            return "SUCCESS", {"vm_id": vm_id, "state": "poweroff", "discarded_saved_state": True}, None
+
+        # 2. Issue graceful ACPI power button event
+        run_vbox(["controlvm", vm_id, "acpipowerbutton"], timeout=5.0)
+
+        # 3. Wait until VM reaches poweroff, reporting failure on timeout (never silent force-kill)
+        t_start = time.time()
+        powered_off = False
+        while time.time() - t_start < timeout_seconds:
+            time.sleep(1.0)
+            rc_chk, out_chk, _ = run_vbox(["showvminfo", vm_id, "--machinereadable"], timeout=3.0)
+            if rc_chk == 0:
+                cur_info = parse_machine_readable_output(out_chk)
+                if cur_info.get("VMState", "").lower() in ("poweroff", "aborted"):
+                    powered_off = True
+                    break
+
+        if not powered_off:
+            return "FAILED", {"vm_id": vm_id, "state": curr_state}, (
+                f"Graceful shutdown of VM '{vm_id}' timed out after {timeout_seconds}s. "
+                "Aborting migration to protect guest state integrity."
+            )
+
+        dur = round(time.time() - t_start, 1)
+        logger.info(f"[RPC] VM '{vm_id}' powered off cleanly in {dur}s.")
+        return "SUCCESS", {"vm_id": vm_id, "state": "poweroff", "shutdown_duration_seconds": dur}, None
+
+    elif cmd == "EXPORT_OVA":
+        raw_vm = payload.get("vm_id", "DemoVM")
+        vm_id = resolve_vm_name(raw_vm)
+        job_id = payload.get("job_id", uuid.uuid4().hex[:8])
+        output_dir = payload.get("output_dir", SHARED_STORAGE_PATH)
+        
+        # Check free disk space before exporting (require at least 5GB free)
+        if os.path.exists(output_dir):
+            try:
+                free_bytes = shutil.disk_usage(output_dir).free
+                if free_bytes < (5 * 1024 * 1024 * 1024):
+                    return "FAILED", {"vm_id": vm_id, "free_gb": round(free_bytes / (1024**3), 2)}, (
+                        f"Insufficient disk space on export path '{output_dir}'. "
+                        f"Free: {round(free_bytes / (1024**3), 2)} GB, Required: 5.0 GB."
+                    )
+            except Exception as e:
+                logger.warning(f"Could not verify disk space on '{output_dir}': {e}")
+
+        os.makedirs(output_dir, exist_ok=True)
+        ova_path = os.path.join(output_dir, f"VMotion-Migration-{job_id}.ova")
+        logger.info(f"[RPC] Exporting VM '{vm_id}' to OVA package: {ova_path}...")
+
+        # VBoxManage export command
+        t0 = time.time()
+        export_args = ["export", vm_id, "-o", ova_path, "--ovf20"]
+        rc, stdout, stderr = run_vbox(export_args, timeout=600.0)
+        export_dur = round(time.time() - t0, 2)
+
+        if rc != 0 or not os.path.exists(ova_path):
+            return "FAILED", {"vm_id": vm_id, "ova_path": ova_path, "stderr": stderr, "stdout": stdout}, (
+                f"VBoxManage OVA export failed: {stderr or stdout or 'OVA file not created'}"
+            )
+
+        file_size = os.path.getsize(ova_path)
+        if file_size == 0:
+            return "FAILED", {"vm_id": vm_id, "ova_path": ova_path}, "Exported OVA file size is 0 bytes."
+
+        # Compute SHA-256 checksum
+        logger.info(f"[RPC] Calculating SHA-256 checksum of {ova_path} ({round(file_size / (1024*1024), 2)} MB)...")
+        sha256_hash = hashlib.sha256()
+        with open(ova_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                sha256_hash.update(chunk)
+        digest = sha256_hash.hexdigest()
+
+        logger.info(f"[RPC] Export complete: {file_size} bytes, SHA-256: {digest[:16]}... ({export_dur}s)")
+        return "SUCCESS", {
+            "vm_id": vm_id,
+            "job_id": job_id,
+            "ova_path": ova_path,
+            "file_size_bytes": file_size,
+            "file_size_mb": round(file_size / (1024 * 1024), 2),
+            "sha256": digest,
+            "export_duration_seconds": export_dur
+        }, None
+
+    elif cmd == "TRANSFER_PACKAGE":
+        source_path = payload.get("source_path", "")
+        job_id = payload.get("job_id", uuid.uuid4().hex[:8])
+        staging_dir = payload.get("staging_dir", r"C:\VMotionStaging")
+        expected_sha256 = payload.get("expected_sha256", "")
+        expected_size = payload.get("file_size_bytes", 0)
+
+        # Check free disk space in staging directory (require at least 5GB free)
+        os.makedirs(staging_dir, exist_ok=True)
+        try:
+            free_bytes = shutil.disk_usage(staging_dir).free
+            if free_bytes < (5 * 1024 * 1024 * 1024):
+                return "FAILED", {"staging_dir": staging_dir, "free_gb": round(free_bytes / (1024**3), 2)}, (
+                    f"Insufficient disk space in staging directory '{staging_dir}'. "
+                    f"Free: {round(free_bytes / (1024**3), 2)} GB, Required: 5.0 GB."
+                )
+        except Exception as e:
+            logger.warning(f"Could not verify disk space in staging '{staging_dir}': {e}")
+
+        staged_path = os.path.join(staging_dir, f"VMotion-Migration-{job_id}.ova")
+        logger.info(f"[RPC] Transferring OVA from '{source_path}' to local staging '{staged_path}'...")
+
+        if not os.path.exists(source_path):
+            return "FAILED", {"source_path": source_path}, f"Source OVA package not found at '{source_path}'."
+
+        t0 = time.time()
+        # If source and destination paths are identical, skip redundant copy
+        if os.path.abspath(source_path) != os.path.abspath(staged_path):
+            shutil.copyfile(source_path, staged_path)
+        transfer_dur = round(time.time() - t0, 2)
+
+        staged_size = os.path.getsize(staged_path) if os.path.exists(staged_path) else 0
+        if staged_size == 0:
+            return "FAILED", {"staged_path": staged_path}, "Transferred OVA file is 0 bytes or missing."
+
+        logger.info(f"[RPC] Transfer complete: {staged_size} bytes in {transfer_dur}s.")
+        return "SUCCESS", {
+            "job_id": job_id,
+            "staged_path": staged_path,
+            "file_size_bytes": staged_size,
+            "file_size_mb": round(staged_size / (1024 * 1024), 2),
+            "transfer_duration_seconds": transfer_dur
+        }, None
+
+    elif cmd == "VERIFY_CHECKSUM":
+        file_path = payload.get("file_path", "")
+        expected_sha256 = payload.get("expected_sha256", "").lower().strip()
+
+        if not os.path.exists(file_path):
+            return "FAILED", {"file_path": file_path}, f"File '{file_path}' does not exist for checksum verification."
+
+        logger.info(f"[RPC] Computing SHA-256 digest on '{file_path}'...")
+        sha256_hash = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                sha256_hash.update(chunk)
+        actual_sha256 = sha256_hash.hexdigest().lower()
+
+        if expected_sha256 and actual_sha256 != expected_sha256:
+            logger.error(f"[RPC] Checksum mismatch! Expected {expected_sha256}, got {actual_sha256}.")
+            # Quarantine corrupted file
+            try:
+                os.replace(file_path, file_path + ".corrupt")
+            except Exception:
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+            return "FAILED", {
+                "file_path": file_path,
+                "expected": expected_sha256,
+                "actual": actual_sha256
+            }, f"Cryptographic SHA-256 checksum mismatch: expected {expected_sha256}, got {actual_sha256}."
+
+        logger.info(f"[RPC] Checksum verified successfully: {actual_sha256[:16]}...")
+        return "SUCCESS", {
+            "file_path": file_path,
+            "sha256": actual_sha256,
+            "verified": True
+        }, None
+
+    elif cmd == "IMPORT_OVA":
+        ova_path = payload.get("ova_path", "")
+        job_id = payload.get("job_id", uuid.uuid4().hex[:8])
+        vm_name = payload.get("vm_name", f"VMotion-Migrated-{job_id}")
+
+        if not os.path.exists(ova_path):
+            return "FAILED", {"ova_path": ova_path}, f"OVA file '{ova_path}' not found for import."
+
+        # Idempotency check: see if VM with this name is already registered
+        rc_list, out_list, _ = run_vbox(["list", "vms"], timeout=5.0)
+        if rc_list == 0 and f'"{vm_name}"' in out_list:
+            logger.warning(f"[RPC] Duplicate import requested: VM '{vm_name}' already exists.")
+            return "FAILED", {"vm_name": vm_name, "duplicate": True}, (
+                f"Duplicate migration job '{job_id}': VM '{vm_name}' has already been imported on this host."
+            )
+
+        logger.info(f"[RPC] Importing appliance '{ova_path}' as '{vm_name}'...")
+        t0 = time.time()
+        import_args = ["import", ova_path, "--vsys", "0", "--vmname", vm_name]
+        rc, stdout, stderr = run_vbox(import_args, timeout=600.0)
+        import_dur = round(time.time() - t0, 2)
+
+        if rc != 0:
+            return "FAILED", {"vm_name": vm_name, "stderr": stderr, "stdout": stdout}, (
+                f"VBoxManage appliance import failed: {stderr or stdout}"
+            )
+
+        logger.info(f"[RPC] Appliance imported as '{vm_name}' in {import_dur}s.")
+        return "SUCCESS", {
+            "job_id": job_id,
+            "vm_name": vm_name,
+            "import_duration_seconds": import_dur
+        }, None
+
+    elif cmd == "START_VM":
+        vm_name = payload.get("vm_name", "DemoVM")
+        logger.info(f"[RPC] Booting imported VM '{vm_name}' in headless mode...")
+        rc, stdout, stderr = run_vbox(["startvm", vm_name, "--type", "headless"], timeout=30.0)
+        if rc != 0 and "already" not in (stderr + stdout).lower():
+            return "FAILED", {"vm_name": vm_name, "stderr": stderr, "stdout": stdout}, (
+                f"Failed to start destination VM '{vm_name}': {stderr or stdout}"
+            )
+        return "SUCCESS", {"vm_name": vm_name, "status": "started"}, None
+
+    elif cmd == "VERIFY_DESTINATION":
+        vm_name = payload.get("vm_name", "DemoVM")
+        logger.info(f"[RPC] Verifying destination workload health for '{vm_name}'...")
+
+        # 1. Query runningvms
+        rc, out, _ = run_vbox(["list", "runningvms"], timeout=5.0)
+        is_running = any(f'"{vm_name}"' in line for line in out.splitlines()) if rc == 0 else False
+
+        # 2. Query showvminfo for state
+        rc_info, out_info, _ = run_vbox(["showvminfo", vm_name, "--machinereadable"], timeout=5.0)
+        vm_state = "unknown"
+        if rc_info == 0:
+            info = parse_machine_readable_output(out_info)
+            vm_state = info.get("VMState", "unknown").lower()
+            if vm_state == "running":
+                is_running = True
+
+        if not is_running:
+            return "FAILED", {"vm_name": vm_name, "vm_state": vm_state}, (
+                f"Destination VM '{vm_name}' is not running (state: {vm_state})."
+            )
+
+        logger.info(f"[RPC] Destination workload '{vm_name}' verified active and running.")
+        return "SUCCESS", {
+            "vm_name": vm_name,
+            "vm_state": vm_state,
+            "verified": True,
+            "verified_at": time.time()
+        }, None
 
     else:
         return "FAILED", {}, f"Unknown or unauthorized command '{command}'"

@@ -1,14 +1,14 @@
 # ==============================================================================
 # VMotion AI - Host B (Target Laptop / Friend's Laptop) Setup & Agent Launcher
 # Connects to Public Cloud Control Plane over Outbound WSS
-# Listens for Teleportation P2P over Phone Hotspot / LAN on TCP Port 60050
+# Real Cold / Offline VM Migration (Direct LAN SMB Copy & OVA Import)
 # ==============================================================================
 
 param(
     [string]$HostAIp = "",
     [string]$GatewayUrl = "wss://vmotion-ai-control-plane.onrender.com/ws/agent",
     [string]$GatewayToken = "",
-    [string]$TargetVmName = "VMotion - demo target",
+    [string]$StagingDir = "C:\VMotionStaging",
     [int]$TeleportPort = 60050
 )
 
@@ -16,7 +16,7 @@ $ErrorActionPreference = "Stop"
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Magenta
 Write-Host "   VMOTION AI - HOST B (TARGET LAPTOP) SETUP" -ForegroundColor Magenta
-Write-Host "   P2P Direct LAN Teleportation Receiver Node" -ForegroundColor Magenta
+Write-Host "   Real Cold / Offline VM Migration (OVA Appliance Import)" -ForegroundColor Magenta
 Write-Host "=================================================================" -ForegroundColor Magenta
 Write-Host ""
 
@@ -102,20 +102,22 @@ if ($pingOk) {
     Write-Warning "ICMP ping to $HostAIp did not reply, but SMB/TCP may still be open."
 }
 
-# 6. Verify Shared Storage Access (UNC SMB Path)
+# 6. Verify Staging Directory & Shared Storage Access (UNC SMB Path)
+if (-not (Test-Path $StagingDir)) {
+    Write-Host "[INFO] Creating target staging directory: $StagingDir" -ForegroundColor Yellow
+    New-Item -ItemType Directory -Path $StagingDir -Force | Out-Null
+}
+Write-Host "[OK] Target staging directory ready: $StagingDir" -ForegroundColor Green
+
 $sharedPath = "\\$HostAIp\VMotionShared"
-Write-Host "[INFO] Checking access to shared disk at $sharedPath..." -ForegroundColor Yellow
+Write-Host "[INFO] Checking access to Host A shared directory at $sharedPath..." -ForegroundColor Yellow
 if (Test-Path $sharedPath) {
-    Write-Host "[OK] Shared disk directory is accessible: $sharedPath" -ForegroundColor Green
-    $vdiFiles = Get-ChildItem -Path $sharedPath -Filter "*.vdi" -ErrorAction SilentlyContinue
-    if ($vdiFiles.Count -gt 0) {
-        Write-Host "[OK] Found shared virtual disk: $($vdiFiles[0].Name)" -ForegroundColor Green
-    }
+    Write-Host "[OK] Source shared directory is accessible over LAN: $sharedPath" -ForegroundColor Green
 } else {
     Write-Warning "Could not access $sharedPath directly. Make sure both laptops are connected to the SAME phone hotspot and network discovery / file sharing is enabled."
 }
 
-# 7. Open & Verify Windows Firewall Port 60050 for Receiving Teleportation Stream (Fail-Closed)
+# 7. Open & Verify Windows Firewall Port 60050 (Fail-Closed)
 $ruleName = "VMotion AI Teleportation Receiver (Port $TeleportPort)"
 $existingRule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
 if (-not $existingRule) {
@@ -151,21 +153,10 @@ if (-not $lanIp) {
     $lanIp = "127.0.0.1"
 }
 
-# 9. Check Registered VMs on Host B
-$vms = & $vboxPath list vms
-$vmFound = $false
-foreach ($line in $vms) {
-    if ($line -like "*$TargetVmName*" -or $line -like "*VMotion*") {
-        $vmFound = $true
-        Write-Host "[OK] Target VM found: $line" -ForegroundColor Green
-    }
-}
-
-if (-not $vmFound) {
-    Write-Host "[NOTICE] Target VM '$TargetVmName' not yet in list." -ForegroundColor Yellow
-    Write-Host "   If you need to create it, ensure its CPU (2), RAM (4096MB), Chipset (PIIX3), and BIOS match Host A,"
-    Write-Host "   and its SATA controller attaches to: \\$HostAIp\VMotionShared\VMotion-Demo.vdi"
-}
+# 9. Dynamic Appliance Import Notice
+Write-Host "[INFO] Oracle VirtualBox on Host B is ready for automated OVA appliance import." -ForegroundColor Green
+Write-Host "   Note: You do NOT need to manually pre-create the VM on Host B." -ForegroundColor Green
+Write-Host "   The VMotion Agent will automatically import the OVA as 'VMotion-Migrated-<job-id>'." -ForegroundColor Green
 
 # 10. Pre-Flight Validation Summary
 Write-Host ""
@@ -174,7 +165,7 @@ Write-Host "   HOST B (TARGET) PRE-FLIGHT VERIFICATION" -ForegroundColor Magenta
 Write-Host "=================================================================" -ForegroundColor Magenta
 Write-Host "   [OK] Administrator Privileges:  Elevated" -ForegroundColor Green
 Write-Host "   [OK] VirtualBox Version:        $vboxVer" -ForegroundColor Green
-Write-Host "   [OK] Windows Firewall Port:     $TeleportPort (TCP, Verified Active)" -ForegroundColor Green
+Write-Host "   [OK] Target Staging Directory:  $StagingDir" -ForegroundColor Green
 Write-Host "   [OK] Source Host A Reachability: $HostAIp" -ForegroundColor Green
 Write-Host "   [OK] Shared Storage SMB Path:   $sharedPath" -ForegroundColor Green
 Write-Host "   [OK] Host B LAN / Hotspot IP:   $lanIp" -ForegroundColor Green
@@ -191,12 +182,14 @@ $env:LAN_IP = $lanIp
 $env:VMOTION_HOST_IP = $lanIp
 $env:CLOUD_GATEWAY_URL = $GatewayUrl
 $env:VMOTION_SHARED_STORAGE = $sharedPath
+$env:VBOX_STAGING_PATH = $StagingDir
 $env:VBOX_MANAGE_PATH = $vboxPath
+$env:VBOX_MIGRATION_MODE = "cold_ova"
 $env:VMOTION_TELEPORT_PORT = [string]$TeleportPort
 
 Write-Host "Starting VMotion Agent for Host B..." -ForegroundColor Magenta
 Write-Host "Connecting outbound to Cloud Gateway: $GatewayUrl" -ForegroundColor Magenta
-Write-Host "Target agent will stand by in headless listener mode automatically." -ForegroundColor Green
+Write-Host "Target agent is standing by to receive and import OVA appliance." -ForegroundColor Green
 Write-Host ""
 
 if (Test-Path ".venv\Scripts\python.exe") {
