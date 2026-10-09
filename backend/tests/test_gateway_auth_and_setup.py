@@ -142,7 +142,7 @@ def test_setup_host_a_script_contract():
 
 
 def test_setup_host_b_script_contract():
-    """Verify setup_host_b_target.ps1 enforces elevation, verified firewall, and secure token."""
+    """Verify setup_host_b_target.ps1 enforces elevation, disk space, strict SMB access, and secure token."""
     script_path = Path("scripts/setup_host_b_target.ps1")
     assert script_path.exists(), "Host B script must exist"
     content = script_path.read_text(encoding="utf-8")
@@ -160,10 +160,13 @@ def test_setup_host_b_script_contract():
     assert "Read-Host" in content and "-AsSecureString" in content
     assert "onrender.com" in content and "vmotion-vbox-secret" in content
 
-    # 4. Firewall rule uses -ErrorAction Stop and verifies Enabled -eq 'True'
-    assert "-ErrorAction Stop" in content
-    assert "Get-NetFirewallRule" in content
-    assert ".Enabled -eq 'True'" in content
+    # 4. Staging storage, disk quota (>= 5.0 GB), write permissions, and fail-closed SMB share verification
+    assert "C:\\VMotionStaging" in content
+    assert "5.0" in content
+    assert ".vmotion_write_test" in content
+    assert "Test-Path $sharedPath" in content
+    assert "Write-Error" in content
+    assert "Port 60050 receiver not required" in content
 
     # 5. Pre-flight verification summary
     assert "PRE-FLIGHT VERIFICATION" in content

@@ -53,15 +53,25 @@ def test_agent_get_network_info():
 
 
 def test_agent_resolve_vm_name():
-    """Tests VM resolution matching candidates like VMotion - demo target or VMotion-Demo."""
+    """Tests VM resolution: strict exact and case-insensitive match, no arbitrary silent substitution."""
     with patch("agent.run_vbox") as mock_vbox:
-        # First call showvminfo returns non-zero, second call list vms returns inventory
+        # 1. Exact match when showvminfo succeeds
+        mock_vbox.return_value = (0, "name=VMotion-Demo", "")
+        assert resolve_vm_name("VMotion-Demo") == "VMotion-Demo"
+
+        # 2. Case-insensitive match from list vms
         mock_vbox.side_effect = [
             (-1, "", "not found"),
-            (0, '"VMotion - demo target" {uuid1}\n"OtherVM" {uuid2}', "")
+            (0, '"VMotion-Demo" {uuid1}\n"OtherVM" {uuid2}', "")
         ]
-        resolved = resolve_vm_name("DemoVM")
-        assert resolved == "VMotion - demo target"
+        assert resolve_vm_name("vmotion-demo") == "VMotion-Demo"
+
+        # 3. Disparate VM name: no silent arbitrary substitution
+        mock_vbox.side_effect = [
+            (-1, "", "not found"),
+            (0, '"UnrelatedVM" {uuid1}', "")
+        ]
+        assert resolve_vm_name("DemoVM") == "DemoVM"
 
 
 def test_agent_prepare_target_locked_vm_recovery():
@@ -166,7 +176,8 @@ async def test_virtualbox_provider_routes_to_lan_ip():
         created_at=1000.0
     )
 
-    with patch.object(provider, "prepare_target_teleporter", return_value=(True, "Armed")), \
+    with patch("app.providers.virtualbox.settings.VBOX_MIGRATION_MODE", "teleport"), \
+         patch.object(provider, "prepare_target_teleporter", return_value=(True, "Armed")), \
          patch.object(agent_gateway, "is_agent_online", return_value=True), \
          patch.object(agent_gateway, "dispatch_command") as mock_dispatch:
         

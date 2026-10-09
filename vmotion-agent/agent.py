@@ -216,22 +216,41 @@ def sample_host_telemetry() -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Discover running VMs
+    # Discover registered and running VMs
+    rc_all, out_all, _ = run_vbox(["list", "vms"], timeout=5.0)
     rc_run, out_run, _ = run_vbox(["list", "runningvms"], timeout=5.0)
-    running_vms = []
+    running_names = set()
     if rc_run == 0:
         for line in out_run.splitlines():
             if '"' in line:
+                running_names.add(line.split('"')[1])
+
+    all_vms = []
+    if rc_all == 0:
+        for line in out_all.splitlines():
+            if '"' in line:
                 name = line.split('"')[1]
-                running_vms.append({
+                is_running = name in running_names
+                all_vms.append({
                     "id": name,
                     "name": name,
-                    "status": "running",
+                    "status": "running" if is_running else "stopped",
                     "cpus": 2,
                     "memory_mb": 2048,
-                    "cpu_percent": 15.0,
-                    "ram_percent": 30.0
+                    "cpu_percent": 15.0 if is_running else 0.0,
+                    "ram_percent": 30.0 if is_running else 0.0
                 })
+    elif rc_run == 0:
+        for name in running_names:
+            all_vms.append({
+                "id": name,
+                "name": name,
+                "status": "running",
+                "cpus": 2,
+                "memory_mb": 2048,
+                "cpu_percent": 15.0,
+                "ram_percent": 30.0
+            })
 
     return {
         "host_id": HOST_ID,
@@ -244,7 +263,7 @@ def sample_host_telemetry() -> Dict[str, Any]:
         "ram_used_mb": ram_used_mb,
         "ram_percent": ram_percent,
         "net_io": net_io,
-        "vms": running_vms,
+        "vms": all_vms,
         "timestamp": time.time()
     }
 
@@ -252,11 +271,11 @@ def sample_host_telemetry() -> Dict[str, Any]:
 def resolve_vm_name(requested_name: str) -> str:
     """
     Resolves the actual VM name on this host.
-    Checks exact match first; if not found, checks for common demo names
-    (e.g., 'VMotion - demo target', 'VMotion - demo source', 'VMotion-Demo', 'DemoVM').
+    Checks exact match (or case-insensitive exact match) against registered VMs.
+    Does NOT silently substitute arbitrary different VMs.
     """
     if not requested_name:
-        requested_name = "DemoVM"
+        return ""
 
     rc, _, _ = run_vbox(["showvminfo", requested_name, "--machinereadable"], timeout=3.0)
     if rc == 0:
@@ -267,14 +286,10 @@ def resolve_vm_name(requested_name: str) -> str:
         existing_names = [line.split('"')[1] for line in out_all.splitlines() if '"' in line]
         if requested_name in existing_names:
             return requested_name
-        for candidate in ["VMotion - demo target", "VMotion-Demo", "VMotion - demo source", "DemoVM"]:
-            if candidate in existing_names:
-                return candidate
+        # Exact match ignoring case
         for name in existing_names:
-            if "vmotion" in name.lower():
+            if name.lower() == requested_name.lower():
                 return name
-        if existing_names:
-            return existing_names[0]
 
     return requested_name
 
@@ -386,12 +401,14 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
                 "vbox_installed": vbox_installed,
                 "disk_free_mb": disk_free_mb,
                 "sufficient_disk": sufficient_disk,
+                "preflight_passed": all_ok,
                 "lan_ip": get_lan_ip(),
                 "tailscale_ip": get_tailscale_ip()
             }, err
 
         # role == "source"
-        rc, out, err_out = run_vbox(["showvminfo", vm_id, "--machinereadable"], timeout=5.0)
+        resolved = resolve_vm_name(vm_id)
+        rc, out, err_out = run_vbox(["showvminfo", resolved, "--machinereadable"], timeout=5.0)
         vm_exists = (rc == 0)
         snapshots_count = 0
         disks = []
@@ -403,12 +420,27 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
             for k, v in info.items():
                 if any(ctrl in k for ctrl in ["SATA", "SCSI", "IDE", "NVMe"]) and v.endswith((".vdi", ".vmdk", ".vhd")):
                     disks.append(v)
+        else:
+            rc_all, out_all, _ = run_vbox(["list", "vms"], timeout=4.0)
+            existing_names = [line.split('"')[1] for line in out_all.splitlines() if '"' in line] if rc_all == 0 else []
+            err_msg = (
+                f"Source VM '{vm_id}' is not registered in VirtualBox on Host A. "
+                f"Available registered VMs: {existing_names if existing_names else 'None'}. "
+                "Please configure or select a valid VM."
+            )
+            return "FAILED", {
+                "vm_id": vm_id,
+                "vm_exists": False,
+                "preflight_passed": False,
+                "registered_vms": existing_names
+            }, err_msg
 
         storage_accessible = bool(target_path and os.path.exists(target_path)) if target_path else True
 
+        all_ok = vm_exists and (snapshots_count == 0) and storage_accessible and sufficient_disk
         data = {
             "vm_id": vm_id,
-            "resolved_vm_name": vm_id,
+            "resolved_vm_name": resolved,
             "vm_exists": vm_exists,
             "vm_state": vm_state,
             "vbox_installed": vbox_installed,
@@ -420,9 +452,9 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
             "disks": disks,
             "lan_ip": get_lan_ip(),
             "tailscale_ip": get_tailscale_ip(),
-            "port": port
+            "port": port,
+            "preflight_passed": all_ok
         }
-        all_ok = vm_exists and (snapshots_count == 0) and storage_accessible and sufficient_disk
         err_msg = None if all_ok else (
             f"Source pre-flight failed: vm_exists={vm_exists}, snapshots={snapshots_count}, "
             f"storage_accessible={storage_accessible}, sufficient_disk={sufficient_disk} ({disk_free_mb}MB free)"

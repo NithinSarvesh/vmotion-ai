@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     VBOX_TELEPORT_PORT: int = 60050
     VBOX_SHARED_STORAGE_PATH: str = r"C:\VMotionShared"
     VBOX_STAGING_PATH: str = r"C:\VMotionStaging"
-    VBOX_DEMO_VM_NAME: str = "DemoVM"
+    VBOX_DEMO_VM_NAME: str = "VMotion-Demo"
     VBOX_TARGET_VM_NAME: str = "VMotion - demo target"
 
     # Optional Legacy Parameters

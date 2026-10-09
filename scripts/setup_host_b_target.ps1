@@ -102,43 +102,47 @@ if ($pingOk) {
     Write-Warning "ICMP ping to $HostAIp did not reply, but SMB/TCP may still be open."
 }
 
-# 6. Verify Staging Directory & Shared Storage Access (UNC SMB Path)
+# 6. Verify Staging Directory, Disk Space & Write Permissions
 if (-not (Test-Path $StagingDir)) {
     Write-Host "[INFO] Creating target staging directory: $StagingDir" -ForegroundColor Yellow
     New-Item -ItemType Directory -Path $StagingDir -Force | Out-Null
 }
 Write-Host "[OK] Target staging directory ready: $StagingDir" -ForegroundColor Green
 
+# Verify Disk Space on Host B (minimum 5 GB required for OVA import)
+$stagingDrive = (Get-Item $StagingDir).PSDrive
+$freeGbB = [Math]::Round($stagingDrive.Free / 1GB, 2)
+if ($freeGbB -lt 5.0) {
+    Write-Error "[DISK SPACE ERROR] Insufficient free disk space on $($stagingDrive.Name): ($freeGbB GB free, minimum 5.0 GB required for staging and OVA import)."
+    exit 1
+}
+Write-Host "[OK] Disk space on $($stagingDrive.Name):: $freeGbB GB free (>= 5.0 GB required)." -ForegroundColor Green
+
+# Verify directory write permission
+$testFileB = Join-Path $StagingDir ".vmotion_write_test"
+try {
+    [System.IO.File]::WriteAllText($testFileB, "vmotion_test")
+    Remove-Item $testFileB -Force
+    Write-Host "[OK] Write permission confirmed on $StagingDir." -ForegroundColor Green
+} catch {
+    Write-Error "[PERMISSION ERROR] Cannot write to directory $StagingDir: $_"
+    exit 1
+}
+
+# 7. Verify Shared Storage Access (UNC SMB Path - Fail Closed)
 $sharedPath = "\\$HostAIp\VMotionShared"
 Write-Host "[INFO] Checking access to Host A shared directory at $sharedPath..." -ForegroundColor Yellow
 if (Test-Path $sharedPath) {
     Write-Host "[OK] Source shared directory is accessible over LAN: $sharedPath" -ForegroundColor Green
 } else {
-    Write-Warning "Could not access $sharedPath directly. Make sure both laptops are connected to the SAME phone hotspot and network discovery / file sharing is enabled."
-}
-
-# 7. Open & Verify Windows Firewall Port 60050 (Fail-Closed)
-$ruleName = "VMotion AI Teleportation Receiver (Port $TeleportPort)"
-$existingRule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
-if (-not $existingRule) {
-    try {
-        Write-Host "[INFO] Adding Inbound Firewall rule for TCP port $TeleportPort..." -ForegroundColor Yellow
-        New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -LocalPort $TeleportPort -Protocol TCP -Action Allow -ErrorAction Stop | Out-Null
-    } catch {
-        Write-Error "[FIREWALL ERROR] Failed to create firewall rule '$ruleName': $_"
-        exit 1
-    }
-}
-
-$verifyRule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
-if ($verifyRule -and $verifyRule.Enabled -eq 'True') {
-    Write-Host "[OK] Firewall rule '$ruleName' confirmed active and enabled." -ForegroundColor Green
-} else {
-    Write-Error "[FIREWALL ERROR] Firewall rule '$ruleName' could not be verified as active. Failing closed."
+    Write-Error "[SMB ACCESS ERROR] Could not access shared path $sharedPath! Ensure Host A is on the same network, File Sharing is enabled, and 'VMotionShared' share is active. Failing closed."
     exit 1
 }
 
-# 8. Auto-Discover Host B's LAN IP
+# 8. Firewall Configuration (Cold OVA Mode uses standard Windows SMB)
+Write-Host "[OK] Cold OVA migration uses direct SMB transfer. Port 60050 receiver not required." -ForegroundColor Green
+
+# 9. Auto-Discover Host B's LAN IP
 $lanIp = $null
 try {
     $udpSock = New-Object System.Net.Sockets.UdpClient
@@ -153,12 +157,12 @@ if (-not $lanIp) {
     $lanIp = "127.0.0.1"
 }
 
-# 9. Dynamic Appliance Import Notice
+# 10. Dynamic Appliance Import Notice
 Write-Host "[INFO] Oracle VirtualBox on Host B is ready for automated OVA appliance import." -ForegroundColor Green
 Write-Host "   Note: You do NOT need to manually pre-create the VM on Host B." -ForegroundColor Green
 Write-Host "   The VMotion Agent will automatically import the OVA as 'VMotion-Migrated-<job-id>'." -ForegroundColor Green
 
-# 10. Pre-Flight Validation Summary
+# 11. Pre-Flight Validation Summary
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Magenta
 Write-Host "   HOST B (TARGET) PRE-FLIGHT VERIFICATION" -ForegroundColor Magenta
@@ -166,6 +170,8 @@ Write-Host "=================================================================" -
 Write-Host "   [OK] Administrator Privileges:  Elevated" -ForegroundColor Green
 Write-Host "   [OK] VirtualBox Version:        $vboxVer" -ForegroundColor Green
 Write-Host "   [OK] Target Staging Directory:  $StagingDir" -ForegroundColor Green
+Write-Host "   [OK] Staging Disk Space:        $freeGbB GB (>= 5.0 GB required)" -ForegroundColor Green
+Write-Host "   [OK] Write Permissions:         Confirmed" -ForegroundColor Green
 Write-Host "   [OK] Source Host A Reachability: $HostAIp" -ForegroundColor Green
 Write-Host "   [OK] Shared Storage SMB Path:   $sharedPath" -ForegroundColor Green
 Write-Host "   [OK] Host B LAN / Hotspot IP:   $lanIp" -ForegroundColor Green
@@ -174,7 +180,7 @@ Write-Host "   [OK] Cloud Gateway URL:         $GatewayUrl" -ForegroundColor Gre
 Write-Host "=================================================================" -ForegroundColor Magenta
 Write-Host ""
 
-# 11. Set Agent Environment & Launch
+# 12. Set Agent Environment & Launch
 $env:VMOTION_HOST_ID = "vbox-host-b"
 $env:HOST_ID = "vbox-host-b"
 $env:VMOTION_HOST_ROLE = "target"

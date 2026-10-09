@@ -714,35 +714,58 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 source_node=plan.source_node,
                 target_node=plan.target_node,
                 task_id=task.task_id,
-                message=f"[STAGE 1: PREFLIGHT] Verifying source VM '{plan.vm_id}' and host storage quotas.",
+                message=f"[STAGE 1: PREFLIGHT] Verifying physical agent liveness, source VM '{plan.vm_id}', and storage quotas.",
                 details={"stage": "PREFLIGHT", "job_id": job_id}
             )
 
+            # Strict Physical Agent Liveness Verification (Fail-Closed)
             source_online = agent_gateway.is_agent_online(source_agent_id)
             target_online = agent_gateway.is_agent_online(target_agent_id)
 
-            if source_online or target_online:
-                if source_online:
-                    resp_pre_src = await agent_gateway.dispatch_command(
-                        agent_id=source_agent_id,
-                        command="PREFLIGHT_CHECK",
-                        payload={"vm_id": plan.vm_id, "role": "source", "required_disk_mb": 5000},
-                        timeout_seconds=20.0
-                    )
-                    if resp_pre_src.status != "SUCCESS":
-                        raise RuntimeError(f"Source pre-flight check failed: {resp_pre_src.error}")
+            if not source_online and not target_online:
+                raise RuntimeError(
+                    f"Both physical agents are offline ('{source_agent_id}' and '{target_agent_id}'). "
+                    "Cannot proceed with real cold migration. Launch setup scripts on both laptops."
+                )
+            if not source_online:
+                raise RuntimeError(
+                    f"Source host agent '{source_agent_id}' is offline. "
+                    "Verify that scripts/setup_host_a_source.ps1 is running and connected to cloud control plane."
+                )
+            if not target_online:
+                raise RuntimeError(
+                    f"Target host agent '{target_agent_id}' is offline. "
+                    "Verify that scripts/setup_host_b_target.ps1 is running and connected to cloud control plane."
+                )
 
-                if target_online:
-                    resp_pre_tgt = await agent_gateway.dispatch_command(
-                        agent_id=target_agent_id,
-                        command="PREFLIGHT_CHECK",
-                        payload={"role": "target", "required_disk_mb": 10000},
-                        timeout_seconds=20.0
-                    )
-                    if resp_pre_tgt.status != "SUCCESS":
-                        raise RuntimeError(f"Target pre-flight check failed: {resp_pre_tgt.error}")
-            else:
-                await asyncio.sleep(0.05)
+            # Pre-flight check on Source Agent
+            resp_pre_src = await agent_gateway.dispatch_command(
+                agent_id=source_agent_id,
+                command="PREFLIGHT_CHECK",
+                payload={"vm_id": plan.vm_id, "role": "source", "required_disk_mb": 5000},
+                timeout_seconds=20.0
+            )
+            if resp_pre_src.status != "SUCCESS":
+                raise RuntimeError(f"Source pre-flight check failed: {resp_pre_src.error or 'Pre-flight check rejected'}")
+            if not resp_pre_src.data or not resp_pre_src.data.get("vm_exists"):
+                avail = resp_pre_src.data.get("registered_vms") if resp_pre_src.data else "unknown"
+                raise RuntimeError(
+                    f"Source VM '{plan.vm_id}' is not registered in VirtualBox on Host A. Available VMs: {avail}."
+                )
+            if not resp_pre_src.data.get("preflight_passed"):
+                raise RuntimeError(f"Source pre-flight check failed requirements: {resp_pre_src.error or 'Check details'}")
+
+            # Pre-flight check on Target Agent
+            resp_pre_tgt = await agent_gateway.dispatch_command(
+                agent_id=target_agent_id,
+                command="PREFLIGHT_CHECK",
+                payload={"role": "target", "required_disk_mb": 10000},
+                timeout_seconds=20.0
+            )
+            if resp_pre_tgt.status != "SUCCESS":
+                raise RuntimeError(f"Target pre-flight check failed: {resp_pre_tgt.error or 'Pre-flight check rejected'}")
+            if not resp_pre_tgt.data or not resp_pre_tgt.data.get("preflight_passed"):
+                raise RuntimeError(f"Target pre-flight check failed requirements: {resp_pre_tgt.error or 'Check details'}")
 
             # -------------------------------------------------------------
             # STAGE 2: SOURCE SHUTDOWN
@@ -761,17 +784,16 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 details={"stage": "SOURCE SHUTDOWN"}
             )
 
-            if source_online:
-                resp_shut = await agent_gateway.dispatch_command(
-                    agent_id=source_agent_id,
-                    command="SHUTDOWN_VM",
-                    payload={"vm_id": plan.vm_id, "timeout_seconds": 30},
-                    timeout_seconds=45.0
-                )
-                if resp_shut.status != "SUCCESS":
-                    raise RuntimeError(f"Graceful shutdown failed: {resp_shut.error}")
-            else:
-                await asyncio.sleep(0.05)
+            resp_shut = await agent_gateway.dispatch_command(
+                agent_id=source_agent_id,
+                command="SHUTDOWN_VM",
+                payload={"vm_id": plan.vm_id, "timeout_seconds": 30},
+                timeout_seconds=45.0
+            )
+            if resp_shut.status != "SUCCESS":
+                raise RuntimeError(f"Graceful shutdown failed: {resp_shut.error or 'Shutdown RPC rejected'}")
+            if not resp_shut.data or resp_shut.data.get("state") != "poweroff":
+                raise RuntimeError("Graceful shutdown did not confirm powered-off guest state.")
 
             # -------------------------------------------------------------
             # STAGE 3: EXPORT
@@ -791,26 +813,32 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
             )
 
             source_ova_path = os.path.join(settings.VBOX_SHARED_STORAGE_PATH, ova_filename)
-            if source_online:
-                resp_exp = await agent_gateway.dispatch_command(
-                    agent_id=source_agent_id,
-                    command="EXPORT_OVA",
-                    payload={"vm_id": plan.vm_id, "job_id": job_id, "output_dir": settings.VBOX_SHARED_STORAGE_PATH},
-                    timeout_seconds=600.0
-                )
-                if resp_exp.status != "SUCCESS":
-                    raise RuntimeError(f"OVA appliance export failed: {resp_exp.error}")
-                task.file_size_bytes = resp_exp.data.get("file_size_bytes", 0)
-                task.file_size_mb = resp_exp.data.get("file_size_mb", 0.0)
-                task.sha256 = resp_exp.data.get("sha256", "")
-                task.export_duration_seconds = resp_exp.data.get("export_duration_seconds", 0.0)
-                source_ova_path = resp_exp.data.get("ova_path", source_ova_path)
-            else:
-                task.file_size_bytes = 2147483648
-                task.file_size_mb = 2048.0
-                task.sha256 = f"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855{job_id[:8]}"
-                task.export_duration_seconds = 6.5
-                await asyncio.sleep(0.05)
+            resp_exp = await agent_gateway.dispatch_command(
+                agent_id=source_agent_id,
+                command="EXPORT_OVA",
+                payload={"vm_id": plan.vm_id, "job_id": job_id, "output_dir": settings.VBOX_SHARED_STORAGE_PATH},
+                timeout_seconds=600.0
+            )
+            if resp_exp.status != "SUCCESS":
+                raise RuntimeError(f"OVA appliance export failed: {resp_exp.error or 'Export RPC rejected'}")
+            if not resp_exp.data:
+                raise RuntimeError("OVA appliance export returned empty response data.")
+
+            file_size_bytes = resp_exp.data.get("file_size_bytes", 0)
+            file_size_mb = resp_exp.data.get("file_size_mb", 0.0)
+            sha256 = resp_exp.data.get("sha256", "")
+            export_duration = resp_exp.data.get("export_duration_seconds", 0.0)
+
+            if not file_size_bytes or file_size_bytes <= 0:
+                raise RuntimeError("OVA appliance export returned invalid or 0-byte file size.")
+            if not sha256 or len(sha256) < 64:
+                raise RuntimeError("OVA appliance export did not provide a valid SHA-256 cryptographic digest.")
+
+            task.file_size_bytes = file_size_bytes
+            task.file_size_mb = file_size_mb or round(file_size_bytes / (1024 * 1024), 2)
+            task.sha256 = sha256
+            task.export_duration_seconds = export_duration
+            source_ova_path = resp_exp.data.get("ova_path", source_ova_path)
 
             # -------------------------------------------------------------
             # STAGE 4: TRANSFER
@@ -829,31 +857,36 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
             )
 
             session_src = agent_gateway.get_session(source_agent_id)
-            src_lan_ip = session_src.lan_ip if session_src and session_src.lan_ip else "127.0.0.1"
+            if not session_src or not session_src.lan_ip:
+                raise RuntimeError(f"Source agent '{source_agent_id}' does not have a registered LAN IP address for direct SMB transfer.")
+            src_lan_ip = session_src.lan_ip
             unc_source_path = f"\\\\{src_lan_ip}\\VMotionShared\\{ova_filename}"
             staging_dir = settings.VBOX_STAGING_PATH
             staged_path = os.path.join(staging_dir, ova_filename)
 
-            if target_online:
-                resp_trans = await agent_gateway.dispatch_command(
-                    agent_id=target_agent_id,
-                    command="TRANSFER_PACKAGE",
-                    payload={
-                        "source_path": unc_source_path,
-                        "job_id": job_id,
-                        "staging_dir": staging_dir,
-                        "expected_sha256": task.sha256,
-                        "file_size_bytes": task.file_size_bytes
-                    },
-                    timeout_seconds=600.0
-                )
-                if resp_trans.status != "SUCCESS":
-                    raise RuntimeError(f"OVA package transfer failed: {resp_trans.error}")
-                task.transfer_duration_seconds = resp_trans.data.get("transfer_duration_seconds", 0.0)
-                staged_path = resp_trans.data.get("staged_path", staged_path)
-            else:
-                task.transfer_duration_seconds = 4.2
-                await asyncio.sleep(0.05)
+            resp_trans = await agent_gateway.dispatch_command(
+                agent_id=target_agent_id,
+                command="TRANSFER_PACKAGE",
+                payload={
+                    "source_path": unc_source_path,
+                    "job_id": job_id,
+                    "staging_dir": staging_dir,
+                    "expected_sha256": task.sha256,
+                    "file_size_bytes": task.file_size_bytes
+                },
+                timeout_seconds=600.0
+            )
+            if resp_trans.status != "SUCCESS":
+                raise RuntimeError(f"OVA package transfer failed: {resp_trans.error or 'Transfer RPC rejected'}")
+            if not resp_trans.data:
+                raise RuntimeError("OVA package transfer returned empty response data.")
+
+            transfer_duration = resp_trans.data.get("transfer_duration_seconds", 0.0)
+            staged_path = resp_trans.data.get("staged_path", staged_path)
+            if not staged_path:
+                raise RuntimeError("OVA package transfer did not report staged destination path.")
+
+            task.transfer_duration_seconds = transfer_duration
 
             # -------------------------------------------------------------
             # STAGE 5: CHECKSUM VERIFIED
@@ -871,17 +904,16 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 details={"stage": "CHECKSUM VERIFIED", "sha256": task.sha256}
             )
 
-            if target_online:
-                resp_chk = await agent_gateway.dispatch_command(
-                    agent_id=target_agent_id,
-                    command="VERIFY_CHECKSUM",
-                    payload={"file_path": staged_path, "expected_sha256": task.sha256},
-                    timeout_seconds=60.0
-                )
-                if resp_chk.status != "SUCCESS":
-                    raise RuntimeError(f"Checksum verification failed: {resp_chk.error}")
-            else:
-                await asyncio.sleep(0.05)
+            resp_chk = await agent_gateway.dispatch_command(
+                agent_id=target_agent_id,
+                command="VERIFY_CHECKSUM",
+                payload={"file_path": staged_path, "expected_sha256": task.sha256},
+                timeout_seconds=60.0
+            )
+            if resp_chk.status != "SUCCESS":
+                raise RuntimeError(f"Checksum verification failed: {resp_chk.error or 'Checksum verification failed'}")
+            if not resp_chk.data or not resp_chk.data.get("verified"):
+                raise RuntimeError("Checksum verification failed: destination did not verify digest match.")
 
             # -------------------------------------------------------------
             # STAGE 6: IMPORT
@@ -899,19 +931,18 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 details={"stage": "IMPORT", "imported_vm_name": imported_vm_name}
             )
 
-            if target_online:
-                resp_imp = await agent_gateway.dispatch_command(
-                    agent_id=target_agent_id,
-                    command="IMPORT_OVA",
-                    payload={"ova_path": staged_path, "job_id": job_id, "vm_name": imported_vm_name},
-                    timeout_seconds=600.0
-                )
-                if resp_imp.status != "SUCCESS":
-                    raise RuntimeError(f"VBoxManage appliance import failed: {resp_imp.error}")
-                task.import_duration_seconds = resp_imp.data.get("import_duration_seconds", 0.0)
-            else:
-                task.import_duration_seconds = 7.8
-                await asyncio.sleep(0.05)
+            resp_imp = await agent_gateway.dispatch_command(
+                agent_id=target_agent_id,
+                command="IMPORT_OVA",
+                payload={"ova_path": staged_path, "job_id": job_id, "vm_name": imported_vm_name},
+                timeout_seconds=600.0
+            )
+            if resp_imp.status != "SUCCESS":
+                raise RuntimeError(f"VBoxManage appliance import failed: {resp_imp.error or 'Import RPC rejected'}")
+            if not resp_imp.data:
+                raise RuntimeError("VBoxManage appliance import returned empty response data.")
+
+            task.import_duration_seconds = resp_imp.data.get("import_duration_seconds", 0.0)
 
             # -------------------------------------------------------------
             # STAGE 7: DESTINATION STARTED
@@ -929,17 +960,14 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 details={"stage": "DESTINATION STARTED", "vm_name": imported_vm_name}
             )
 
-            if target_online:
-                resp_start = await agent_gateway.dispatch_command(
-                    agent_id=target_agent_id,
-                    command="START_VM",
-                    payload={"vm_name": imported_vm_name},
-                    timeout_seconds=40.0
-                )
-                if resp_start.status != "SUCCESS":
-                    raise RuntimeError(f"Failed to start destination VM: {resp_start.error}")
-            else:
-                await asyncio.sleep(0.05)
+            resp_start = await agent_gateway.dispatch_command(
+                agent_id=target_agent_id,
+                command="START_VM",
+                payload={"vm_name": imported_vm_name},
+                timeout_seconds=40.0
+            )
+            if resp_start.status != "SUCCESS":
+                raise RuntimeError(f"Failed to start destination VM: {resp_start.error or 'Start VM RPC rejected'}")
 
             # -------------------------------------------------------------
             # STAGE 8: VERIFY
@@ -958,17 +986,17 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 details={"stage": "VERIFY", "vm_name": imported_vm_name}
             )
 
-            if target_online:
-                resp_ver = await agent_gateway.dispatch_command(
-                    agent_id=target_agent_id,
-                    command="VERIFY_DESTINATION",
-                    payload={"vm_name": imported_vm_name},
-                    timeout_seconds=20.0
-                )
-                if resp_ver.status != "SUCCESS":
-                    raise RuntimeError(f"Destination verification failed: {resp_ver.error}")
-            else:
-                await asyncio.sleep(0.05)
+            resp_ver = await agent_gateway.dispatch_command(
+                agent_id=target_agent_id,
+                command="VERIFY_DESTINATION",
+                payload={"vm_name": imported_vm_name},
+                timeout_seconds=20.0
+            )
+            if resp_ver.status != "SUCCESS":
+                raise RuntimeError(f"Destination verification failed: {resp_ver.error or 'Verification RPC rejected'}")
+            if not resp_ver.data or not resp_ver.data.get("verified") or resp_ver.data.get("vm_state") != "running":
+                state_reported = resp_ver.data.get("vm_state") if resp_ver.data else "none"
+                raise RuntimeError(f"Destination VM '{imported_vm_name}' not running (state reported: {state_reported}).")
 
             # -------------------------------------------------------------
             # STAGE 9: SUCCESS
@@ -1023,10 +1051,10 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
     async def execute_migration(self, plan: MigrationPlan) -> str:
         """
         Initiates VirtualBox VM migration:
-        - By default (VBOX_MIGRATION_MODE == 'cold_ova'): Executes real 9-stage Cold/Offline OVA migration.
-        - Legacy mode (VBOX_MIGRATION_MODE == 'teleport'): Executes real-time VirtualBox Teleportation.
+        - When VBOX_MIGRATION_MODE == 'cold_ova': Unconditionally executes real 9-stage Cold/Offline OVA migration.
+        - When VBOX_MIGRATION_MODE == 'teleport': Executes legacy real-time VirtualBox Teleportation.
         """
-        task_id = f"vbx-teleport-{uuid.uuid4().hex[:8]}"
+        task_id = f"vbx-cold-{uuid.uuid4().hex[:8]}" if getattr(settings, "VBOX_MIGRATION_MODE", "cold_ova") == "cold_ova" else f"vbx-teleport-{uuid.uuid4().hex[:8]}"
         now = time.time()
 
         initial_status = MigrationTaskStatus(
@@ -1044,8 +1072,8 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
         self._tasks[task_id] = initial_status
 
         migration_mode = getattr(settings, "VBOX_MIGRATION_MODE", "cold_ova")
-        if migration_mode == "cold_ova" and "teleport" not in plan.reason.lower() and "lan hotspot test" not in plan.reason.lower():
-            # Real Cold/Offline OVA migration pipeline (asynchronous 9-stage execution)
+        if migration_mode == "cold_ova":
+            # Real Cold/Offline OVA migration pipeline (authoritative 9-stage execution)
             asyncio.create_task(self._run_cold_migration_job(initial_status, plan))
             return task_id
 

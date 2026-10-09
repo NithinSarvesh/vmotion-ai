@@ -291,7 +291,7 @@ def test_agent_verify_destination_running():
 
 @pytest.mark.asyncio
 async def test_provider_cold_migration_full_success():
-    """Verifies full 9-stage cold migration succeeds and records all stage metrics."""
+    """Verifies full 9-stage cold migration succeeds with verified metrics from live agents."""
     provider = VirtualBoxProvider()
 
     plan = MigrationPlan(
@@ -303,7 +303,7 @@ async def test_provider_cold_migration_full_success():
         created_at=time.time()
     )
 
-    task_id = f"vbx-cold-test1"
+    task_id = "vbx-cold-test1"
     task = MigrationTaskStatus(
         task_id=task_id,
         plan_id=plan.plan_id,
@@ -318,23 +318,201 @@ async def test_provider_cold_migration_full_success():
     )
     provider._tasks[task_id] = task
 
-    # Run cold migration job directly
-    await provider._run_cold_migration_job(task, plan)
+    mock_session = MagicMock()
+    mock_session.lan_ip = "192.168.1.10"
 
-    # In simulated/fallback environment (no live physical agent connected),
-    # _run_cold_migration_job executes simulated transitions through all 9 stages
-    assert task.stage == "SUCCESS"
-    assert task.state == "VERIFIED"
-    assert task.progress_percent == 100.0
-    assert task.file_size_bytes > 0
-    assert task.file_size_mb > 0
-    assert len(task.sha256) > 0
-    assert task.export_duration_seconds > 0
-    assert task.transfer_duration_seconds > 0
-    assert task.import_duration_seconds > 0
-    assert task.imported_vm_name.startswith("VMotion-Migrated-")
-    assert task.verified_at is not None
-    assert task.completed_at is not None
+    expected_sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+    with patch.object(agent_gateway, "is_agent_online", return_value=True), \
+         patch.object(agent_gateway, "get_session", return_value=mock_session), \
+         patch.object(agent_gateway, "dispatch_command") as mock_dispatch:
+
+        async def fake_dispatch(agent_id, command, payload, timeout_seconds=None):
+            if command == "PREFLIGHT_CHECK":
+                if payload.get("role") == "source":
+                    return AgentCommandResponse(status="SUCCESS", data={"preflight_passed": True, "vm_exists": True, "registered_vms": ["VMotion-Demo"]})
+                else:
+                    return AgentCommandResponse(status="SUCCESS", data={"preflight_passed": True})
+            elif command == "SHUTDOWN_VM":
+                return AgentCommandResponse(status="SUCCESS", data={"state": "poweroff", "shutdown": True})
+            elif command == "EXPORT_OVA":
+                return AgentCommandResponse(status="SUCCESS", data={
+                    "file_size_bytes": 104857600,
+                    "file_size_mb": 100.0,
+                    "sha256": expected_sha,
+                    "export_duration_seconds": 12.5,
+                    "ova_path": "C:\\VMotionShared\\VMotion-Demo.ova"
+                })
+            elif command == "TRANSFER_PACKAGE":
+                return AgentCommandResponse(status="SUCCESS", data={
+                    "transfer_duration_seconds": 8.0,
+                    "staged_path": "C:\\VMotionStaging\\VMotion-Demo.ova"
+                })
+            elif command == "VERIFY_CHECKSUM":
+                return AgentCommandResponse(status="SUCCESS", data={"verified": True, "sha256": expected_sha})
+            elif command == "IMPORT_OVA":
+                return AgentCommandResponse(status="SUCCESS", data={
+                    "import_duration_seconds": 15.0,
+                    "vm_name": f"VMotion-Migrated-{task_id}"
+                })
+            elif command == "START_VM":
+                return AgentCommandResponse(status="SUCCESS", data={"started": True, "vm_state": "running"})
+            elif command == "VERIFY_DESTINATION":
+                return AgentCommandResponse(status="SUCCESS", data={"verified": True, "vm_state": "running"})
+            return AgentCommandResponse(status="SUCCESS", data={})
+
+        mock_dispatch.side_effect = fake_dispatch
+
+        await provider._run_cold_migration_job(task, plan)
+
+        assert task.stage == "SUCCESS"
+        assert task.state == "VERIFIED"
+        assert task.progress_percent == 100.0
+        assert task.file_size_bytes == 104857600
+        assert task.file_size_mb == 100.0
+        assert task.sha256 == expected_sha
+        assert task.export_duration_seconds == 12.5
+        assert task.transfer_duration_seconds == 8.0
+        assert task.imported_vm_name.startswith("VMotion-Migrated-")
+        assert task.imported_vm_name == "VMotion-Migrated-test1"
+        assert task.verified_at is not None
+        assert task.completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_cold_migration_fails_when_both_agents_offline():
+    """Verifies that cold migration fails closed at PREFLIGHT when both agents are offline."""
+    provider = VirtualBoxProvider()
+    plan = MigrationPlan(
+        plan_id="plan-offline-both",
+        vm_id="VMotion-Demo",
+        source_node="vbox-host-a",
+        target_node="vbox-host-b",
+        reason="Fail offline test",
+        created_at=time.time()
+    )
+    task = MigrationTaskStatus(
+        task_id="task-offline-both",
+        plan_id=plan.plan_id,
+        vm_id=plan.vm_id,
+        source_node=plan.source_node,
+        target_node=plan.target_node,
+        state="PREPARING",
+        stage="PREFLIGHT",
+        progress_percent=5.0,
+        started_at=time.time(),
+        updated_at=time.time()
+    )
+
+    with patch.object(agent_gateway, "is_agent_online", return_value=False):
+        await provider._run_cold_migration_job(task, plan)
+        assert task.state == "FAILED"
+        assert "PREFLIGHT" in task.stage
+        assert "Both physical agents are offline" in task.error
+
+
+@pytest.mark.asyncio
+async def test_cold_migration_fails_when_source_agent_offline():
+    """Verifies that cold migration fails closed at PREFLIGHT when source agent is offline."""
+    provider = VirtualBoxProvider()
+    plan = MigrationPlan(
+        plan_id="plan-offline-src",
+        vm_id="VMotion-Demo",
+        source_node="vbox-host-a",
+        target_node="vbox-host-b",
+        reason="Fail source offline test",
+        created_at=time.time()
+    )
+    task = MigrationTaskStatus(
+        task_id="task-offline-src",
+        plan_id=plan.plan_id,
+        vm_id=plan.vm_id,
+        source_node=plan.source_node,
+        target_node=plan.target_node,
+        state="PREPARING",
+        stage="PREFLIGHT",
+        progress_percent=5.0,
+        started_at=time.time(),
+        updated_at=time.time()
+    )
+
+    with patch.object(agent_gateway, "is_agent_online", side_effect=lambda aid: aid == "vbox-host-b"):
+        await provider._run_cold_migration_job(task, plan)
+        assert task.state == "FAILED"
+        assert "PREFLIGHT" in task.stage
+        assert "Source host agent 'vbox-host-a' is offline" in task.error
+
+
+@pytest.mark.asyncio
+async def test_cold_migration_fails_when_target_agent_offline():
+    """Verifies that cold migration fails closed at PREFLIGHT when target agent is offline."""
+    provider = VirtualBoxProvider()
+    plan = MigrationPlan(
+        plan_id="plan-offline-tgt",
+        vm_id="VMotion-Demo",
+        source_node="vbox-host-a",
+        target_node="vbox-host-b",
+        reason="Fail target offline test",
+        created_at=time.time()
+    )
+    task = MigrationTaskStatus(
+        task_id="task-offline-tgt",
+        plan_id=plan.plan_id,
+        vm_id=plan.vm_id,
+        source_node=plan.source_node,
+        target_node=plan.target_node,
+        state="PREPARING",
+        stage="PREFLIGHT",
+        progress_percent=5.0,
+        started_at=time.time(),
+        updated_at=time.time()
+    )
+
+    with patch.object(agent_gateway, "is_agent_online", side_effect=lambda aid: aid == "vbox-host-a"):
+        await provider._run_cold_migration_job(task, plan)
+        assert task.state == "FAILED"
+        assert "PREFLIGHT" in task.stage
+        assert "Target host agent 'vbox-host-b' is offline" in task.error
+
+
+@pytest.mark.asyncio
+async def test_cold_migration_fails_when_source_vm_nonexistent():
+    """Verifies that cold migration fails at PREFLIGHT with actionable error if requested VM is missing."""
+    provider = VirtualBoxProvider()
+    plan = MigrationPlan(
+        plan_id="plan-missing-vm",
+        vm_id="VMotion-Demo",
+        source_node="vbox-host-a",
+        target_node="vbox-host-b",
+        reason="Missing VM test",
+        created_at=time.time()
+    )
+    task = MigrationTaskStatus(
+        task_id="task-missing-vm",
+        plan_id=plan.plan_id,
+        vm_id=plan.vm_id,
+        source_node=plan.source_node,
+        target_node=plan.target_node,
+        state="PREPARING",
+        stage="PREFLIGHT",
+        progress_percent=5.0,
+        started_at=time.time(),
+        updated_at=time.time()
+    )
+
+    with patch.object(agent_gateway, "is_agent_online", return_value=True), \
+         patch.object(agent_gateway, "dispatch_command") as mock_dispatch:
+
+        mock_dispatch.return_value = AgentCommandResponse(
+            status="SUCCESS",
+            data={"vm_exists": False, "preflight_passed": False, "registered_vms": ["Ubuntu-22", "Windows-10"]}
+        )
+
+        await provider._run_cold_migration_job(task, plan)
+        assert task.state == "FAILED"
+        assert "PREFLIGHT" in task.stage
+        assert "Source VM 'VMotion-Demo' is not registered" in task.error
+        assert "Ubuntu-22" in task.error
 
 
 @pytest.mark.asyncio
@@ -364,15 +542,14 @@ async def test_provider_cold_migration_fails_on_export_error():
         updated_at=time.time()
     )
 
-    # Mock agent_gateway with online source agent, but dispatch_command fails on EXPORT_OVA
     with patch.object(agent_gateway, "is_agent_online", return_value=True), \
          patch.object(agent_gateway, "dispatch_command") as mock_dispatch:
         
         async def fake_dispatch(agent_id, command, payload, timeout_seconds=None):
-            if command == "PREFLIGHT":
-                return AgentCommandResponse(status="SUCCESS", data={"preflight_passed": True})
+            if command == "PREFLIGHT_CHECK":
+                return AgentCommandResponse(status="SUCCESS", data={"preflight_passed": True, "vm_exists": True})
             elif command == "SHUTDOWN_VM":
-                return AgentCommandResponse(status="SUCCESS", data={"shutdown": True})
+                return AgentCommandResponse(status="SUCCESS", data={"state": "poweroff", "shutdown": True})
             elif command == "EXPORT_OVA":
                 return AgentCommandResponse(status="FAILED", error="Disk locked by host OS")
             return AgentCommandResponse(status="SUCCESS", data={})
@@ -413,14 +590,22 @@ async def test_provider_cold_migration_fails_on_checksum_mismatch():
         updated_at=time.time()
     )
 
+    mock_session = MagicMock()
+    mock_session.lan_ip = "192.168.1.10"
+
+    valid_sha = "a" * 64
+
     with patch.object(agent_gateway, "is_agent_online", return_value=True), \
+         patch.object(agent_gateway, "get_session", return_value=mock_session), \
          patch.object(agent_gateway, "dispatch_command") as mock_dispatch:
         
         async def fake_dispatch(agent_id, command, payload, timeout_seconds=None):
-            if command in ("PREFLIGHT", "SHUTDOWN_VM"):
-                return AgentCommandResponse(status="SUCCESS", data={"preflight_passed": True, "shutdown": True})
+            if command == "PREFLIGHT_CHECK":
+                return AgentCommandResponse(status="SUCCESS", data={"preflight_passed": True, "vm_exists": True})
+            elif command == "SHUTDOWN_VM":
+                return AgentCommandResponse(status="SUCCESS", data={"state": "poweroff", "shutdown": True})
             elif command == "EXPORT_OVA":
-                return AgentCommandResponse(status="SUCCESS", data={"file_size_bytes": 1000, "file_size_mb": 1.0, "sha256": "abcdef", "export_duration_seconds": 2.0})
+                return AgentCommandResponse(status="SUCCESS", data={"file_size_bytes": 1000, "file_size_mb": 1.0, "sha256": valid_sha, "export_duration_seconds": 2.0, "ova_path": "C:\\test.ova"})
             elif command == "TRANSFER_PACKAGE":
                 return AgentCommandResponse(status="SUCCESS", data={"transfer_duration_seconds": 1.5, "staged_path": "C:\\staged.ova"})
             elif command == "VERIFY_CHECKSUM":
@@ -434,3 +619,106 @@ async def test_provider_cold_migration_fails_on_checksum_mismatch():
         assert task.state == "FAILED"
         assert "CHECKSUM VERIFIED" in task.stage
         assert "SHA-256 digest corrupted in transit" in task.error
+
+
+@pytest.mark.asyncio
+async def test_cold_migration_fails_when_destination_verification_incomplete():
+    """Verifies that cold migration fails at VERIFY if destination VM is not running."""
+    provider = VirtualBoxProvider()
+    plan = MigrationPlan(
+        plan_id="plan-verify-fail",
+        vm_id="VMotion-Demo",
+        source_node="vbox-host-a",
+        target_node="vbox-host-b",
+        reason="Destination health check failure",
+        created_at=time.time()
+    )
+    task = MigrationTaskStatus(
+        task_id="task-verify-fail",
+        plan_id=plan.plan_id,
+        vm_id=plan.vm_id,
+        source_node=plan.source_node,
+        target_node=plan.target_node,
+        state="PREPARING",
+        stage="PREFLIGHT",
+        progress_percent=5.0,
+        started_at=time.time(),
+        updated_at=time.time()
+    )
+
+    mock_session = MagicMock()
+    mock_session.lan_ip = "192.168.1.10"
+    valid_sha = "b" * 64
+
+    with patch.object(agent_gateway, "is_agent_online", return_value=True), \
+         patch.object(agent_gateway, "get_session", return_value=mock_session), \
+         patch.object(agent_gateway, "dispatch_command") as mock_dispatch:
+
+        async def fake_dispatch(agent_id, command, payload, timeout_seconds=None):
+            if command == "PREFLIGHT_CHECK":
+                return AgentCommandResponse(status="SUCCESS", data={"preflight_passed": True, "vm_exists": True})
+            elif command == "SHUTDOWN_VM":
+                return AgentCommandResponse(status="SUCCESS", data={"state": "poweroff", "shutdown": True})
+            elif command == "EXPORT_OVA":
+                return AgentCommandResponse(status="SUCCESS", data={"file_size_bytes": 1000, "file_size_mb": 1.0, "sha256": valid_sha, "export_duration_seconds": 2.0, "ova_path": "C:\\test.ova"})
+            elif command == "TRANSFER_PACKAGE":
+                return AgentCommandResponse(status="SUCCESS", data={"transfer_duration_seconds": 1.5, "staged_path": "C:\\staged.ova"})
+            elif command == "VERIFY_CHECKSUM":
+                return AgentCommandResponse(status="SUCCESS", data={"verified": True, "sha256": valid_sha})
+            elif command == "IMPORT_OVA":
+                return AgentCommandResponse(status="SUCCESS", data={"import_duration_seconds": 5.0, "vm_name": "VMotion-Migrated-1"})
+            elif command == "START_VM":
+                return AgentCommandResponse(status="SUCCESS", data={"started": True})
+            elif command == "VERIFY_DESTINATION":
+                return AgentCommandResponse(status="SUCCESS", data={"verified": False, "vm_state": "aborted"})
+            return AgentCommandResponse(status="SUCCESS", data={})
+
+        mock_dispatch.side_effect = fake_dispatch
+
+        await provider._run_cold_migration_job(task, plan)
+
+        assert task.state == "FAILED"
+        assert "VERIFY" in task.stage
+        assert "not running" in task.error
+
+
+@pytest.mark.asyncio
+async def test_cold_migration_mode_is_authoritative_even_with_teleport_in_reason():
+    """Verifies that VBOX_MIGRATION_MODE=cold_ova is authoritative even if plan.reason mentions teleport."""
+    provider = VirtualBoxProvider()
+    plan = MigrationPlan(
+        plan_id="plan-auth-cold",
+        vm_id="VMotion-Demo",
+        source_node="vbox-host-a",
+        target_node="vbox-host-b",
+        reason="Teleportation required by PPO policy",
+        created_at=time.time()
+    )
+
+    with patch("app.providers.virtualbox.settings.VBOX_MIGRATION_MODE", "cold_ova"), \
+         patch.object(provider, "_run_cold_migration_job") as mock_cold_job:
+        
+        task_id = await provider.execute_migration(plan)
+        assert task_id.startswith("vbx-cold-")
+        mock_cold_job.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_teleport_mode_runs_legacy_when_configured():
+    """Verifies that VBOX_MIGRATION_MODE=teleport dispatches legacy teleportation when explicitly configured."""
+    provider = VirtualBoxProvider()
+    plan = MigrationPlan(
+        plan_id="plan-legacy-tel",
+        vm_id="VMotion-Demo",
+        source_node="vbox-host-a",
+        target_node="vbox-host-b",
+        reason="Explicit teleportation mode",
+        created_at=time.time()
+    )
+
+    with patch("app.providers.virtualbox.settings.VBOX_MIGRATION_MODE", "teleport"), \
+         patch.object(provider, "prepare_target_teleporter", return_value=(True, "Armed")) as mock_prep:
+        
+        task_id = await provider.execute_migration(plan)
+        assert task_id.startswith("vbx-teleport-")
+        mock_prep.assert_called_once()

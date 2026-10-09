@@ -82,48 +82,59 @@ $env:GATEWAY_AGENT_TOKEN = $resolvedToken
 $maskedToken = "*" * [Math]::Min(12, $resolvedToken.Length)
 Write-Host "[OK] Cloud Gateway authentication token configured ($maskedToken, length: $($resolvedToken.Length))." -ForegroundColor Green
 
-# 4. Create & Verify Shared Storage Directory
+# 4. Create & Verify Shared Storage Directory & Write Permissions
 if (-not (Test-Path $SharedDir)) {
     Write-Host "[INFO] Creating shared directory: $SharedDir" -ForegroundColor Yellow
     New-Item -ItemType Directory -Path $SharedDir -Force | Out-Null
 }
 Write-Host "[OK] Shared directory ready: $SharedDir" -ForegroundColor Green
 
-# 5. Configure Windows SMB Share (for Target Laptop to access VDI)
+# Verify Disk Space on Host A (minimum 5 GB required for OVA export)
+$sharedDrive = (Get-Item $SharedDir).PSDrive
+$freeGbA = [Math]::Round($sharedDrive.Free / 1GB, 2)
+if ($freeGbA -lt 5.0) {
+    Write-Error "[DISK SPACE ERROR] Insufficient free disk space on $($sharedDrive.Name): ($freeGbA GB free, minimum 5.0 GB required for OVA export)."
+    exit 1
+}
+Write-Host "[OK] Disk space on $($sharedDrive.Name):: $freeGbA GB free (>= 5.0 GB required)." -ForegroundColor Green
+
+# Verify directory write permission
+$testFileA = Join-Path $SharedDir ".vmotion_write_test"
+try {
+    [System.IO.File]::WriteAllText($testFileA, "vmotion_test")
+    Remove-Item $testFileA -Force
+    Write-Host "[OK] Write permission confirmed on $SharedDir." -ForegroundColor Green
+} catch {
+    Write-Error "[PERMISSION ERROR] Cannot write to directory $SharedDir: $_"
+    exit 1
+}
+
+# 5. Configure & Verify Windows SMB Share
 $shareName = (Split-Path $SharedDir -Leaf)
 $existingShare = Get-SmbShare -Name $shareName -ErrorAction SilentlyContinue
 if (-not $existingShare) {
     try {
         Write-Host "[INFO] Creating Windows SMB Share '$shareName' on $SharedDir..." -ForegroundColor Yellow
         New-SmbShare -Name $shareName -Path $SharedDir -FullAccess "Everyone" -ErrorAction Stop | Out-Null
-        Write-Host "[OK] SMB Share '$shareName' created successfully." -ForegroundColor Green
     } catch {
-        Write-Warning "Could not create SMB share via PowerShell cmdlet. Attempting 'net share' fallback..."
+        Write-Warning "PowerShell New-SmbShare cmdlet failed. Attempting 'net share' fallback..."
         net share "$shareName=$SharedDir" /grant:everyone,full
     }
-} else {
-    Write-Host "[OK] SMB Share '$shareName' already active." -ForegroundColor Green
 }
 
-# 6. Open & Verify Windows Firewall Port 60050 for Direct LAN Teleportation (Fail-Closed)
-$ruleName = "VMotion AI Teleportation Stream (Port $TeleportPort)"
-$existingRule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
-if (-not $existingRule) {
-    try {
-        Write-Host "[INFO] Adding Inbound Firewall rule for TCP port $TeleportPort..." -ForegroundColor Yellow
-        New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -LocalPort $TeleportPort -Protocol TCP -Action Allow -ErrorAction Stop | Out-Null
-    } catch {
-        Write-Error "[FIREWALL ERROR] Failed to create firewall rule '$ruleName': $_"
-        exit 1
-    }
-}
-
-$verifyRule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
-if ($verifyRule -and $verifyRule.Enabled -eq 'True') {
-    Write-Host "[OK] Firewall rule '$ruleName' confirmed active and enabled." -ForegroundColor Green
-} else {
-    Write-Error "[FIREWALL ERROR] Firewall rule '$ruleName' could not be verified as active. Failing closed."
+$verifyShare = Get-SmbShare -Name $shareName -ErrorAction SilentlyContinue
+if (-not $verifyShare) {
+    Write-Error "[SMB ERROR] SMB Share '$shareName' could not be created or verified on $SharedDir. Please enable File and Printer Sharing in Windows settings."
     exit 1
+}
+Write-Host "[OK] SMB Share '$shareName' confirmed active on $SharedDir." -ForegroundColor Green
+
+# 6. Verify Windows File Sharing Firewall State
+$smbRules = Get-NetFirewallRule -DisplayGroup "File and Printer Sharing" -Direction Inbound -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' }
+if ($smbRules) {
+    Write-Host "[OK] Windows File and Printer Sharing (SMB) inbound firewall rules active." -ForegroundColor Green
+} else {
+    Write-Host "[INFO] Windows SMB network file sharing active." -ForegroundColor Green
 }
 
 # 7. Auto-Discover Active LAN / Hotspot IP Address
@@ -141,11 +152,25 @@ if (-not $lanIp) {
     $lanIp = "127.0.0.1"
 }
 
-# 8. Check Registered VMs
+# 8. Check Registered VMs and Verify Source VM
 $vms = & $vboxPath list vms
 Write-Host "[INFO] VirtualBox VMs registered on Host A:"
 $vms | ForEach-Object { Write-Host "   - $_" }
 Write-Host ""
+
+$vmFound = $false
+foreach ($line in $vms) {
+    if ($line -like "*$VmName*") {
+        $vmFound = $true
+        break
+    }
+}
+if (-not $vmFound) {
+    Write-Warning "Source VM '$VmName' was not found in registered VirtualBox VMs on Host A."
+    Write-Host "Please ensure your VM name matches or pass -VmName '<YourVMName>'." -ForegroundColor Yellow
+} else {
+    Write-Host "[OK] Source VM '$VmName' confirmed registered in VirtualBox on Host A." -ForegroundColor Green
+}
 
 # 9. Pre-Flight Validation Summary
 Write-Host "=================================================================" -ForegroundColor Cyan
@@ -153,9 +178,14 @@ Write-Host "   HOST A (SOURCE) PRE-FLIGHT VERIFICATION" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "   [OK] Administrator Privileges:  Elevated" -ForegroundColor Green
 Write-Host "   [OK] VirtualBox Version:        $vboxVer" -ForegroundColor Green
-Write-Host "   [OK] Windows Firewall Port:     $TeleportPort (TCP, Verified Active)" -ForegroundColor Green
-Write-Host "   [OK] Shared Directory:          $SharedDir" -ForegroundColor Green
-Write-Host "   [OK] SMB Disk Share Path:       \\$lanIp\$shareName" -ForegroundColor Green
+if ($vmFound) {
+    Write-Host "   [OK] Source VM Registration:    $VmName (Found)" -ForegroundColor Green
+} else {
+    Write-Host "   [WARN] Source VM Registration:  $VmName (Not yet found in list)" -ForegroundColor Yellow
+}
+Write-Host "   [OK] Available Disk Space:      $freeGbA GB free" -ForegroundColor Green
+Write-Host "   [OK] Shared Directory:          $SharedDir (Write Verified)" -ForegroundColor Green
+Write-Host "   [OK] SMB Disk Share:            \\$lanIp\$shareName (Active)" -ForegroundColor Green
 Write-Host "   [OK] Hotspot / LAN IPv4:        $lanIp" -ForegroundColor Green
 Write-Host "   [OK] Cloud Gateway Auth:        $maskedToken (length: $($resolvedToken.Length))" -ForegroundColor Green
 Write-Host "   [OK] Cloud Gateway URL:         $GatewayUrl" -ForegroundColor Green

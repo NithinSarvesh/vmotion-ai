@@ -1,7 +1,7 @@
 # VMotion AI — Intelligent Infrastructure Control Plane
-### AI-Powered Virtual Machine Live Migration Control Plane using Oracle VirtualBox Teleportation & Tailscale Private Overlay
+### AI-Powered Virtual Machine Cold Migration Control Plane using Oracle VirtualBox OVA Export/Import & Direct LAN SMB Transfer
 
-VMotion AI is a public-cloud virtual machine migration control plane driven by reinforcement learning (PPO V5). It remotely monitors and orchestrates real-time live virtual machine teleportation across physical Oracle VirtualBox hosts anywhere on the internet using an outbound WebSocket Agent Gateway and Tailscale peer-to-peer overlay network, while enforcing strict deterministic safety bounds and human-in-the-loop operational governance.
+VMotion AI is a public-cloud virtual machine migration control plane driven by reinforcement learning (PPO V5). It remotely monitors physical Oracle VirtualBox hosts over outbound WebSocket Agent connections and orchestrates deterministic, offline (cold) VM migration across physical hosts over local SMB file sharing. The VM undergoes graceful ACPI shutdown (incurring planned downtime during transfer), appliance export (OVA), direct LAN SMB package copy, cryptographic SHA-256 integrity verification, target hypervisor import, and automated headless boot—all governed by deterministic safety gates and human-in-the-loop operational approvals.
 
 ---
 
@@ -9,8 +9,8 @@ VMotion AI is a public-cloud virtual machine migration control plane driven by r
 
 ```
                        PUBLIC CLOUD CONTROL PLANE
-                (FastAPI + React 19 Hosted in Public Cloud)
-                  [https://vmotion-ai.cloud.example.com]
+                (FastAPI + React 19 Hosted in Public Cloud / Render)
+                  [https://vmotion-ai-control-plane.onrender.com]
                                      ▲
                                      │  Outbound Persistent WSS
                                      │  (/ws/agent - Auth Token)
@@ -26,12 +26,13 @@ VMotion AI is a public-cloud virtual machine migration control plane driven by r
 PHYSICAL VIRTUALBOX HOST A                           PHYSICAL VIRTUALBOX HOST B
 (Source Laptop / Physical PC)                        (Target Laptop / Physical PC)
    [vmotion-agent v2.0]                                 [vmotion-agent v2.0]
-   Tailscale: 100.64.0.10                               Tailscale: 100.64.0.20
+   LAN / Hotspot: 172.16.0.2                            LAN / Hotspot: 172.16.0.55
+   Shared Dir: C:\VMotionShared                         Staging Dir: C:\VMotionStaging
+           │                                                   ▲
            │                                                   │
-           │                                                   │
-           └═══════════════ TAILSCALE DATA PLANE ══════════════┘
-                     Encrypted Direct WireGuard Mesh
-                   TCP Port 60050 Live Teleport Stream
+           └═══════════════ DIRECT LAN SMB DATA PLANE ═════════┘
+                     Direct Windows SMB Copy (Bypasses Cloud)
+                     Package: C:\VMotionShared\*.ova
                                      │
                                      ▼
                    OBSERVATION ADAPTER (v1.0.0 Contract)
@@ -50,40 +51,41 @@ PHYSICAL VIRTUALBOX HOST A                           PHYSICAL VIRTUALBOX HOST B
                 Operator Cryptographic / Manual Signoff
                                      │
                                      ▼
-                ORACLE VIRTUALBOX TELEPORTATION ENGINE
-          Target Arming: modifyvm --teleporter on + startvm headless
-          Source Stream: controlvm teleport --host 100.64.0.20 --port 60050
-                                     │
-                                     ▼
-                     SHARED NETWORK STORAGE (SMB / NFS)
-                     Identical VDI Disk Resides on Shared Mount
-                                     │
-                                     ▼
-               POST-MIGRATION PLACEMENT & HEALTH VERIFICATION
-                Source Released • Target Verified Running Headlessly
+                ORACLE VIRTUALBOX COLD MIGRATION ENGINE
+          9-Stage Deterministic Pipeline (Fail-Closed Execution):
+          1. PREFLIGHT      → Quotas, exact VM & agent liveness verified
+          2. SOURCE SHUTDOWN→ ACPI shutdown (planned downtime)
+          3. EXPORT         → VBoxManage export + SHA-256 calculation
+          4. TRANSFER       → Direct SMB copy into target staging
+          5. CHECKSUM VERIFY→ SHA-256 cryptographic match check
+          6. IMPORT         → VBoxManage import dynamic appliance
+          7. DESTINATION ON → Headless VM start on target host
+          8. VERIFY         → Hypervisor health & state verification
+          9. SUCCESS        → Verified status & forensic audit ledger
 ```
 
 ### Core Architectural Principles
 1. **Public Cloud Control Plane with Edge Execution**:
-   - The VMotion AI control plane runs in the public cloud (Render, Railway, AWS, Docker).
+   - The VMotion AI control plane runs in the public cloud (Render, Railway, Docker).
    - Hypervisors do NOT run in the cloud; they run on physical laptops or workstations (Host A and Host B).
    - Remote host agents establish persistent **outbound WebSocket connections** (`/ws/agent`), requiring zero inbound port forwarding or public IP addresses on the laptops.
-2. **Tailscale Peer-to-Peer Data Plane**:
-   - Live VM memory transmission occurs directly between Host A and Host B over a private, encrypted **Tailscale WireGuard overlay mesh** (`100.x.y.z`).
-   - The high-throughput teleportation stream bypasses the public cloud server entirely, ensuring maximum throughput, minimum latency, and enterprise-grade data privacy.
-3. **The AI Recommends. The Safety Gate Validates. The Human Approves. The Backend Executes**:
+2. **Real Cold / Offline VM Migration with Planned Downtime**:
+   - VMotion AI performs genuine, physical cold VM migration using Oracle VirtualBox OVA appliance export and import.
+   - The guest operating system is gracefully powered off via ACPI before export, ensuring zero filesystem corruption or split-brain memory divergence. Planned downtime occurs during export and network transfer.
+3. **Direct LAN / Hotspot SMB Data Plane**:
+   - VM disk and state are packaged into an OVA appliance file and transferred directly between Host A and Host B across the local Wi-Fi / hotspot network via Windows SMB (`\\HostA\VMotionShared`).
+   - The high-volume disk transfer completely bypasses the public cloud server, eliminating bandwidth bottlenecks and safeguarding data privacy.
+4. **Cryptographic Integrity & Quarantine**:
+   - Host A calculates a 256-bit SHA-256 checksum during export.
+   - Host B independently recalculates the SHA-256 digest upon transfer completion before touching the hypervisor. If a checksum mismatch occurs, the file is immediately quarantined (`.corrupt`) and the task fails closed.
+5. **The AI Recommends. The Safety Gate Validates. The Human Approves. The Backend Executes**:
    - The AI agent cannot dispatch hypervisor commands unilaterally.
    - Deterministic safety validation overrides AI policy decisions unconditionally.
    - Operator human signoff is strictly required prior to dispatch.
-4. **Authoritative Oracle VirtualBox Teleportation**:
-   - Live migration streams RAM and CPU execution state across Tailscale port `60050` with sub-second guest pause time.
-   - Target VM is pre-armed via `VBoxManage modifyvm <target> --teleporter on --teleporter-port 60050 --teleporter-address 0.0.0.0` and started headlessly.
-   - Source transfers state via `VBoxManage controlvm <source> teleport --host <target_tailscale_ip> --port 60050 --maxdowntime 500`.
-5. **Deterministic Safety Architecture**:
-   - 8 core mandatory checks and 16 fail-closed validation rules.
-   - Typed error codes (`VBX_VM_NOT_FOUND`, `VBX_VM_NOT_RUNNING`, `VBX_TARGET_UNREACHABLE`, `VBX_INCOMPATIBLE_VM_CONFIG`, `VBX_SHARED_STORAGE_UNAVAILABLE`, `VBX_TELEPORT_PORT_BLOCKED`, `VBX_SNAPSHOT_CONFLICT`, etc.).
-   - Prevents split-brain scenarios, resource starvation, and CPU instruction incompatibilities.
-6. **Append-Only Forensic Audit Ledger**:
+6. **Strict Fail-Closed Real Execution (No Synthetic Data)**:
+   - Both physical agents must be online before migration starts. If either agent is offline, migration aborts at PREFLIGHT.
+   - Synthetic metrics, fake durations, and mock checksums are strictly rejected. The destination VM must be confirmed in `running` state by the target hypervisor before `SUCCESS` is recorded.
+7. **Append-Only Forensic Audit Ledger**:
    - Every telemetry frame, recommendation, safety veto, approval, migration phase transition, and verification check is immutably logged with microsecond timestamps and cryptographic task IDs.
 
 ---
@@ -96,13 +98,17 @@ To maintain absolute academic and engineering honesty (for institutional evaluat
 |---|:---:|---|
 | **Public Cloud Control Plane** | **100%** | Multi-stage Dockerfile, FastAPI REST/WSS, static frontend hosting, Render blueprint |
 | **Cloud Agent Gateway Router** | **100%** | Persistent outbound WSS, token authentication, correlation ID matching, RPC timeout handling |
-| **Tailscale Overlay Integration** | **100%** | Automated Tailscale IP discovery, peer-to-peer data plane routing on port 60050 |
+| **Direct SMB Data Plane** | **100%** | Windows SMB share configuration, UNC path discovery, direct LAN copy, disk quota validation |
 | **PPO V5 Reinforcement Learning Engine** | **100%** | Frozen PyTorch/Stable-Baselines3 weights (`ppo_v5_final.zip`), 103-feature contract v1.0.0, Discrete(7) action space |
 | **Deterministic Safety Gate** | **100%** | 16 fail-closed rules, 8 core mandatory checks, zero-bypass policy, typed `VBX_*` error codes |
-| **VirtualBox Provider & Host Agent** | **100%** | Native `VBoxManage` integration, machine-readable parser, target compatibility matrix, pre-warming, teleport dispatch |
-| **Automated Test Suite** | **100%** | **117 passing automated unit & integration tests** in `backend/tests/` (100% pass rate) |
-| **Frontend Control Plane UI** | **100%** | React 19, TypeScript, Vite, Tailwind CSS, Tailscale live metrics, centerpiece **Live Demo** screen |
-| **Two-Host Physical Laboratory Run** | **Demonstration Ready** | **READY (Pending physical two-host laboratory execution)**. Software is completely implemented; execution occurs once two physical computers connect via Tailscale. |
+| **VirtualBox Provider & Cold OVA Engine** | **100%** | 9-stage deterministic pipeline, ACPI graceful shutdown, OVA export/import, SHA-256 integrity verification |
+| **Automated Test Suite** | **100%** | **158 passing automated unit & integration tests** in `backend/tests/` (100% pass rate) |
+| **Frontend Control Plane UI** | **100%** | React 19, TypeScript, Vite, Tailwind CSS, live agent telemetry, centerpiece **Live Demo** screen |
+| **Two-Host Physical Laboratory Run** | **Demonstration Ready** | **READY (Pending physical two-host laboratory execution)**. Software is completely implemented; execution occurs when Host A and Host B run their setup scripts on the same phone hotspot / LAN. |
+
+> [!NOTE]
+> **Automated Mock Tests vs. Physical Host Runs**:
+> The 158 automated pytest tests validate all software contracts, gateway authentication, observation normalization, PPO inference, safety gate edge cases, and 9-stage cold migration orchestration by mocking hypervisor and agent boundaries. Physical two-host execution validates actual Windows SMB transfer speed, real VBoxManage export/import durations, and physical hardware behavior when running `scripts/setup_host_a_source.ps1` and `scripts/setup_host_b_target.ps1`.
 
 ---
 
@@ -197,9 +203,11 @@ To run the complete automated test suite:
 .\.venv\Scripts\pytest.exe -v backend/tests
 ```
 
-### Verified Test Areas (151 Tests Passing, 100% Pass Rate):
-- **VirtualBox Cold OVA Migration**: `backend/tests/test_virtualbox_cold_migration.py` (16 tests)
+### Verified Test Areas (158 Tests Passing, 100% Pass Rate):
+- **VirtualBox Cold OVA Migration**: `backend/tests/test_virtualbox_cold_migration.py` (23 tests)
   - Preflight disk space quota failure and validation
+  - Preflight failure when source or target agent is offline (fail-closed)
+  - Preflight failure when requested VM is not registered on Host A
   - Graceful ACPI guest shutdown timeout and success
   - Appliance export failure and SHA-256 cryptographic calculation
   - Direct LAN SMB transfer failure and local staging copy
@@ -208,7 +216,10 @@ To run the complete automated test suite:
   - Appliance import failure and dynamic registration
   - Headless VM start failure handling
   - Destination running health verification
-  - Full end-to-end 9-stage orchestration in `VirtualBoxProvider`
+  - Destination failure when VM not running fails closed at VERIFY
+  - Authoritative `VBOX_MIGRATION_MODE=cold_ova` routing
+  - Explicit legacy `teleport` mode routing
+  - Full end-to-end 9-stage orchestration in `VirtualBoxProvider` with verified live metrics
 - **Cloud Agent Gateway**: `backend/tests/test_agent_gateway.py` (7 tests)
   - Agent outbound registration & session creation
   - Heartbeat freshness and timeout detection

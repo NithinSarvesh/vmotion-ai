@@ -109,20 +109,26 @@ async def test_vbox_prepare_target_teleporter(vbox_provider):
 async def test_vbox_execute_migration_plan(vbox_provider):
     plan = MigrationPlan(
         plan_id="plan-vbx-test",
-        vm_id="DemoVM",
+        vm_id="VMotion-Demo",
         source_node="vbox-host-a",
         target_node="vbox-host-b",
         reason="Load rebalancing",
         created_at=time.time(),
         with_local_disks=False
     )
-    with patch.object(vbox_provider, "_run_vbox_local") as mock_run:
+    # 1. Authoritative default cold_ova mode
+    task_id = await vbox_provider.execute_migration(plan)
+    assert task_id.startswith("vbx-cold-")
+    task = await vbox_provider.monitor_migration_task(task_id)
+    assert task.vm_id == "VMotion-Demo"
+    assert task.target_node == "vbox-host-b"
+
+    # 2. Legacy teleport mode when configured
+    with patch("app.providers.virtualbox.settings.VBOX_MIGRATION_MODE", "teleport"), \
+         patch.object(vbox_provider, "_run_vbox_local") as mock_run:
         mock_run.return_value = (0, "Teleportation 100% complete", "")
-        task_id = await vbox_provider.execute_migration(plan)
-        assert task_id.startswith("vbx-teleport-")
-        task = await vbox_provider.monitor_migration_task(task_id)
-        assert task.vm_id == "DemoVM"
-        assert task.target_node == "vbox-host-b"
+        task_id_tel = await vbox_provider.execute_migration(plan)
+        assert task_id_tel.startswith("vbx-teleport-")
 
 
 @pytest.mark.asyncio
