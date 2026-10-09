@@ -6,6 +6,7 @@
 
 param(
     [string]$GatewayUrl = "wss://vmotion-ai-control-plane.onrender.com/ws/agent",
+    [string]$GatewayToken = "",
     [string]$SharedDir = "C:\VMotionShared",
     [string]$VmName = "VMotion-Demo",
     [int]$TeleportPort = 60050
@@ -19,11 +20,13 @@ Write-Host "   P2P Direct LAN Teleportation Data Plane" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 
-# 1. Check Administrator Privileges
+# 1. Check Administrator Privileges (Fail-Closed)
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
-    Write-Warning "Please run PowerShell as Administrator to configure Firewall and SMB shares."
+    Write-Error "Administrator privileges are required to configure Windows Firewall rules and SMB shares. Please restart PowerShell as Administrator."
+    exit 1
 }
+Write-Host "[OK] PowerShell session running with Administrator privileges." -ForegroundColor Green
 
 # 2. Check VirtualBox Installation
 $vboxPaths = @(
@@ -39,14 +42,54 @@ $vboxPath = $vboxPaths[0]
 $vboxVer = & $vboxPath --version
 Write-Host "[OK] VirtualBox detected: $vboxVer ($vboxPath)" -ForegroundColor Green
 
-# 3. Create & Verify Shared Storage Directory
+# 3. Secure Cloud Gateway Token Resolution
+$resolvedToken = ""
+if ($GatewayToken -and $GatewayToken.Trim() -ne "") {
+    $resolvedToken = $GatewayToken.Trim()
+} elseif ($env:VMOTION_AGENT_SECRET -and $env:VMOTION_AGENT_SECRET.Trim() -ne "") {
+    $resolvedToken = $env:VMOTION_AGENT_SECRET.Trim()
+} elseif ($env:GATEWAY_AGENT_TOKEN -and $env:GATEWAY_AGENT_TOKEN.Trim() -ne "") {
+    $resolvedToken = $env:GATEWAY_AGENT_TOKEN.Trim()
+} else {
+    try {
+        Write-Host ""
+        Write-Host "[AUTH] Cloud Gateway Token is required for Render authentication." -ForegroundColor Yellow
+        $secPrompt = Read-Host -Prompt "Please enter GATEWAY_AGENT_TOKEN from Render Dashboard" -AsSecureString
+        if ($secPrompt) {
+            $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secPrompt)
+            $resolvedToken = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr).Trim()
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+    } catch {
+        $resolvedToken = ""
+    }
+}
+
+if (-not $resolvedToken) {
+    Write-Error "[AUTH ERROR] Missing Cloud Gateway Token! Please supply -GatewayToken <token> or set `$env:GATEWAY_AGENT_TOKEN / `$env:VMOTION_AGENT_SECRET."
+    exit 1
+}
+
+# If targeting remote Render and token is the default dev secret, block with clear instruction
+if ($GatewayUrl -like "*onrender.com*" -and $resolvedToken -eq "vmotion-vbox-secret") {
+    Write-Error "[AUTH ERROR] Render generated a dynamic GATEWAY_AGENT_TOKEN for your deployment. The local default 'vmotion-vbox-secret' will be rejected with HTTP 403. Please copy the actual value from Render Dashboard -> Environment tab."
+    exit 1
+}
+
+# Export environment variables for the agent process (do NOT print or persist the token)
+$env:VMOTION_AGENT_SECRET = $resolvedToken
+$env:GATEWAY_AGENT_TOKEN = $resolvedToken
+$maskedToken = "*" * [Math]::Min(12, $resolvedToken.Length)
+Write-Host "[OK] Cloud Gateway authentication token configured ($maskedToken, length: $($resolvedToken.Length))." -ForegroundColor Green
+
+# 4. Create & Verify Shared Storage Directory
 if (-not (Test-Path $SharedDir)) {
     Write-Host "[INFO] Creating shared directory: $SharedDir" -ForegroundColor Yellow
     New-Item -ItemType Directory -Path $SharedDir -Force | Out-Null
 }
 Write-Host "[OK] Shared directory ready: $SharedDir" -ForegroundColor Green
 
-# 4. Configure Windows SMB Share (for Target Laptop to access VDI)
+# 5. Configure Windows SMB Share (for Target Laptop to access VDI)
 $shareName = (Split-Path $SharedDir -Leaf)
 $existingShare = Get-SmbShare -Name $shareName -ErrorAction SilentlyContinue
 if (-not $existingShare) {
@@ -55,29 +98,35 @@ if (-not $existingShare) {
         New-SmbShare -Name $shareName -Path $SharedDir -FullAccess "Everyone" -ErrorAction Stop | Out-Null
         Write-Host "[OK] SMB Share '$shareName' created successfully." -ForegroundColor Green
     } catch {
-        Write-Warning "Could not create SMB share via PowerShell. Attempting 'net share' fallback..."
+        Write-Warning "Could not create SMB share via PowerShell cmdlet. Attempting 'net share' fallback..."
         net share "$shareName=$SharedDir" /grant:everyone,full
     }
 } else {
     Write-Host "[OK] SMB Share '$shareName' already active." -ForegroundColor Green
 }
 
-# 5. Open Windows Firewall Port 60050 for Direct LAN Teleportation
+# 6. Open & Verify Windows Firewall Port 60050 for Direct LAN Teleportation (Fail-Closed)
 $ruleName = "VMotion AI Teleportation Stream (Port $TeleportPort)"
 $existingRule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
 if (-not $existingRule) {
     try {
         Write-Host "[INFO] Adding Inbound Firewall rule for TCP port $TeleportPort..." -ForegroundColor Yellow
-        New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -LocalPort $TeleportPort -Protocol TCP -Action Allow | Out-Null
-        Write-Host "[OK] Firewall port $TeleportPort opened for P2P live migration." -ForegroundColor Green
+        New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -LocalPort $TeleportPort -Protocol TCP -Action Allow -ErrorAction Stop | Out-Null
     } catch {
-        Write-Warning "Could not add firewall rule automatically. Run: netsh advfirewall firewall add rule name=`"$ruleName`" dir=in action=allow protocol=TCP localport=$TeleportPort"
+        Write-Error "[FIREWALL ERROR] Failed to create firewall rule '$ruleName': $_"
+        exit 1
     }
-} else {
-    Write-Host "[OK] Firewall rule '$ruleName' is already enabled." -ForegroundColor Green
 }
 
-# 6. Auto-Discover Active LAN / Hotspot IP Address
+$verifyRule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
+if ($verifyRule -and $verifyRule.Enabled -eq 'True') {
+    Write-Host "[OK] Firewall rule '$ruleName' confirmed active and enabled." -ForegroundColor Green
+} else {
+    Write-Error "[FIREWALL ERROR] Firewall rule '$ruleName' could not be verified as active. Failing closed."
+    exit 1
+}
+
+# 7. Auto-Discover Active LAN / Hotspot IP Address
 $lanIp = $null
 try {
     $udpSock = New-Object System.Net.Sockets.UdpClient
@@ -92,26 +141,32 @@ if (-not $lanIp) {
     $lanIp = "127.0.0.1"
 }
 
+# 8. Check Registered VMs
+$vms = & $vboxPath list vms
+Write-Host "[INFO] VirtualBox VMs registered on Host A:"
+$vms | ForEach-Object { Write-Host "   - $_" }
 Write-Host ""
-Write-Host "-----------------------------------------------------------------" -ForegroundColor Cyan
-Write-Host "   HOST A (SOURCE) NETWORK CONFIGURATION" -ForegroundColor Cyan
-Write-Host "   Active LAN / Hotspot IPv4:  $lanIp" -ForegroundColor Green
-Write-Host "   Shared Storage UNC Path:    \\$lanIp\$shareName" -ForegroundColor Green
-Write-Host "   Teleport Listener Port:     $TeleportPort (TCP)" -ForegroundColor Green
-Write-Host "-----------------------------------------------------------------" -ForegroundColor Cyan
+
+# 9. Pre-Flight Validation Summary
+Write-Host "=================================================================" -ForegroundColor Cyan
+Write-Host "   HOST A (SOURCE) PRE-FLIGHT VERIFICATION" -ForegroundColor Cyan
+Write-Host "=================================================================" -ForegroundColor Cyan
+Write-Host "   [OK] Administrator Privileges:  Elevated" -ForegroundColor Green
+Write-Host "   [OK] VirtualBox Version:        $vboxVer" -ForegroundColor Green
+Write-Host "   [OK] Windows Firewall Port:     $TeleportPort (TCP, Verified Active)" -ForegroundColor Green
+Write-Host "   [OK] Shared Directory:          $SharedDir" -ForegroundColor Green
+Write-Host "   [OK] SMB Disk Share Path:       \\$lanIp\$shareName" -ForegroundColor Green
+Write-Host "   [OK] Hotspot / LAN IPv4:        $lanIp" -ForegroundColor Green
+Write-Host "   [OK] Cloud Gateway Auth:        $maskedToken (length: $($resolvedToken.Length))" -ForegroundColor Green
+Write-Host "   [OK] Cloud Gateway URL:         $GatewayUrl" -ForegroundColor Green
+Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host ">> Give this info to Host B (Friend's Laptop):" -ForegroundColor Yellow
 Write-Host "   Host A LAN IP:  $lanIp" -ForegroundColor Yellow
 Write-Host "   SMB Disk Share: \\$lanIp\$shareName\VMotion-Demo.vdi" -ForegroundColor Yellow
 Write-Host ""
 
-# 7. Check Registered VMs
-$vms = & $vboxPath list vms
-Write-Host "[INFO] VirtualBox VMs registered on Host A:"
-$vms | ForEach-Object { Write-Host "   - $_" }
-Write-Host ""
-
-# 8. Set Agent Environment & Launch
+# 10. Set Agent Environment & Launch
 $env:VMOTION_HOST_ID = "vbox-host-a"
 $env:HOST_ID = "vbox-host-a"
 $env:VMOTION_HOST_ROLE = "source"
@@ -132,4 +187,5 @@ if (Test-Path ".venv\Scripts\python.exe") {
     python "vmotion-agent\agent.py"
 } else {
     Write-Error "Python executable not found! Please run agent.py with Python 3.10+."
+    exit 1
 }

@@ -3,6 +3,7 @@ VMotion AI Configuration Module.
 Strict adherence to safety gates, human-in-the-loop controls, and provider abstractions.
 """
 from typing import Literal
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -60,6 +61,19 @@ class Settings(BaseSettings):
     HOST_A_ID: str = "vbox-host-a"
     HOST_B_ID: str = "vbox-host-b"
     
+    @model_validator(mode="after")
+    def sync_agent_tokens(self) -> "Settings":
+        """
+        Synchronize GATEWAY_AGENT_TOKEN and VBOX_AGENT_SECRET.
+        Ensures that if Render defines GATEWAY_AGENT_TOKEN dynamically,
+        VBOX_AGENT_SECRET matches it unless explicitly configured otherwise.
+        """
+        if self.GATEWAY_AGENT_TOKEN != "vmotion-vbox-secret" and self.VBOX_AGENT_SECRET == "vmotion-vbox-secret":
+            self.VBOX_AGENT_SECRET = self.GATEWAY_AGENT_TOKEN
+        elif self.VBOX_AGENT_SECRET != "vmotion-vbox-secret" and self.GATEWAY_AGENT_TOKEN == "vmotion-vbox-secret":
+            self.GATEWAY_AGENT_TOKEN = self.VBOX_AGENT_SECRET
+        return self
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 

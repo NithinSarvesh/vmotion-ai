@@ -4,6 +4,7 @@ Broadcasts streaming telemetry, active migration updates, and audit timeline ent
 """
 import asyncio
 import json
+import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from typing import Set
 
@@ -12,6 +13,7 @@ from app.audit.logger import audit_logger
 from app.gateway.agent_gateway import agent_gateway
 from app.config import settings
 
+logger = logging.getLogger("agent-gateway")
 ws_router = APIRouter()
 
 
@@ -102,6 +104,10 @@ async def websocket_agent_gateway_endpoint(
     expected_token = settings.GATEWAY_AGENT_TOKEN
     provided_token = token or websocket.headers.get("X-Agent-Secret", "")
     if expected_token and provided_token != expected_token:
+        logger.warning(
+            f"[Agent Gateway] Authentication rejected for host '{host_id}'. "
+            "Token mismatch: provided agent token does not match settings.GATEWAY_AGENT_TOKEN."
+        )
         await websocket.close(code=4001, reason="Unauthorized: Invalid agent secret token")
         return
 

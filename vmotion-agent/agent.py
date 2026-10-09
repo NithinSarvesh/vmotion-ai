@@ -40,7 +40,7 @@ logger = logging.getLogger("vbox-agent")
 
 # Configuration & environment resolution
 HOST_ID = os.getenv("VMOTION_HOST_ID", os.getenv("HOST_ID", "vbox-host-a"))
-AGENT_SECRET = os.getenv("VMOTION_AGENT_SECRET", "vmotion-vbox-secret")
+AGENT_SECRET = os.getenv("VMOTION_AGENT_SECRET") or os.getenv("GATEWAY_AGENT_TOKEN") or "vmotion-vbox-secret"
 CLOUD_GATEWAY_URL = os.getenv("CLOUD_GATEWAY_URL", os.getenv("VMOTION_GATEWAY_URL", "ws://127.0.0.1:8000/ws/agent"))
 ENABLE_CLOUD_GATEWAY = os.getenv("ENABLE_CLOUD_GATEWAY", "true").lower() in ("true", "1", "yes")
 
@@ -568,6 +568,18 @@ async def cloud_gateway_client_task():
         logger.info("[Gateway Client] Outbound gateway disabled or websockets package missing.")
         return
 
+    if not AGENT_SECRET or not AGENT_SECRET.strip():
+        logger.error("[Gateway Client] Authentication token is empty! Set VMOTION_AGENT_SECRET or GATEWAY_AGENT_TOKEN.")
+        return
+
+    is_remote_render = "onrender.com" in CLOUD_GATEWAY_URL.lower()
+    if is_remote_render and AGENT_SECRET.strip() == "vmotion-vbox-secret":
+        logger.warning(
+            "[Gateway Client] WARNING: You are connecting to a remote Render gateway with the default placeholder "
+            "token 'vmotion-vbox-secret'. Render generates a dynamic GATEWAY_AGENT_TOKEN in production. "
+            "If your connection fails with HTTP 403, please export GATEWAY_AGENT_TOKEN or pass -GatewayToken."
+        )
+
     delay = 2.0
     while True:
         target_url = f"{CLOUD_GATEWAY_URL}?host_id={HOST_ID}&token={AGENT_SECRET}"
@@ -630,7 +642,16 @@ async def cloud_gateway_client_task():
                         last_telemetry_time = now
 
         except Exception as e:
-            logger.warning(f"[Gateway Client] Gateway connection failed/interrupted: {e}. Retrying in {delay}s...")
+            err_str = str(e)
+            if "403" in err_str or "4001" in err_str or "unauthorized" in err_str.lower() or "forbidden" in err_str.lower():
+                logger.error(
+                    f"[Gateway Client] AUTHENTICATION FAILED (HTTP 403 / Code 4001): "
+                    f"The secret token provided to this agent was rejected by the cloud control plane. "
+                    f"Please verify that VMOTION_AGENT_SECRET / GATEWAY_AGENT_TOKEN matches the GATEWAY_AGENT_TOKEN "
+                    f"configured in your Render Dashboard (Environment tab). Retrying in {delay}s..."
+                )
+            else:
+                logger.warning(f"[Gateway Client] Gateway connection failed/interrupted: {e}. Retrying in {delay}s...")
             await asyncio.sleep(delay)
             delay = min(delay * 1.5, 30.0)
 
