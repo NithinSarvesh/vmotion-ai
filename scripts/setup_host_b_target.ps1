@@ -1,4 +1,4 @@
-# ==============================================================================
+﻿# ==============================================================================
 # VMotion AI - Host B (Target Laptop / Friend's Laptop) Setup & Agent Launcher
 # Connects to Public Cloud Control Plane over Outbound WSS
 # Real Cold / Offline VM Migration (Direct LAN SMB Copy & OVA Import)
@@ -125,7 +125,7 @@ try {
     Remove-Item $testFileB -Force
     Write-Host "[OK] Write permission confirmed on $StagingDir." -ForegroundColor Green
 } catch {
-    Write-Error "[PERMISSION ERROR] Cannot write to directory $StagingDir: $_"
+    Write-Error "[PERMISSION ERROR] Cannot write to directory ${StagingDir}: $_"
     exit 1
 }
 
@@ -206,3 +206,4 @@ if (Test-Path ".venv\Scripts\python.exe") {
     Write-Error "Python executable not found! Please run agent.py with Python 3.10+."
     exit 1
 }
+

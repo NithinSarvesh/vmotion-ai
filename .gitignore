@@ -42,3 +42,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 audit_events.jsonl
+*.db
+*.db-shm
+*.db-wal
+*.spec

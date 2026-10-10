@@ -312,7 +312,7 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
             "vbox_version": out_ver if rc_ver == 0 else "Unknown"
         }, None
 
-    elif cmd == "GET_INVENTORY":
+    elif cmd in ("GET_INVENTORY", "GET_VM_INVENTORY"):
         rc_all, out_all, _ = run_vbox(["list", "vms"], timeout=5.0)
         rc_run, out_run, _ = run_vbox(["list", "runningvms"], timeout=5.0)
         vms = []
@@ -321,11 +321,45 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
             for line in out_all.splitlines():
                 if '"' in line:
                     vname = line.split('"')[1]
-                    vms.append({
+                    vm_item = {
+                        "vmid": vname,
                         "name": vname,
-                        "status": "running" if vname in running_names else "stopped"
-                    })
-        return "SUCCESS", {"vms": vms, "total": len(vms), "lan_ip": get_lan_ip()}, None
+                        "status": "running" if vname in running_names else "stopped",
+                        "cpu_cores": 2,
+                        "ram_mb": 2048.0,
+                        "disk_gb": 20.0,
+                        "os_type": "other"
+                    }
+                    rc_info, out_info, _ = run_vbox(["showvminfo", vname, "--machinereadable"], timeout=3.0)
+                    if rc_info == 0:
+                        minfo = parse_machine_readable_output(out_info)
+                        vm_item["cpu_cores"] = int(minfo.get("cpus", 2))
+                        vm_item["ram_mb"] = float(minfo.get("memory", 2048))
+                        vm_item["os_type"] = minfo.get("ostype", "other")
+                    vms.append(vm_item)
+        return "SUCCESS", {"vms": vms, "total": len(vms), "lan_ip": get_lan_ip(), "tailscale_ip": get_tailscale_ip()}, None
+
+    elif cmd == "PUBLISH_VM":
+        vm_name = payload.get("vm_name") or payload.get("vm_id")
+        if not vm_name:
+            return "FAILED", {}, "vm_name is required for PUBLISH_VM"
+        resolved = resolve_vm_name(vm_name)
+        rc, out, err = run_vbox(["showvminfo", resolved, "--machinereadable"], timeout=5.0)
+        if rc != 0:
+            return "FAILED", {"vm_name": vm_name}, f"VM '{vm_name}' not found: {err}"
+        minfo = parse_machine_readable_output(out)
+        return "SUCCESS", {
+            "vm_name": resolved,
+            "status": "published",
+            "cpu_cores": int(minfo.get("cpus", 2)),
+            "ram_mb": float(minfo.get("memory", 2048)),
+            "os_type": minfo.get("ostype", "other"),
+            "power_state": minfo.get("VMState", "poweroff")
+        }, None
+
+    elif cmd == "UNPUBLISH_VM":
+        vm_name = payload.get("vm_name") or payload.get("vm_id")
+        return "SUCCESS", {"vm_name": vm_name, "status": "unpublished"}, None
 
     elif cmd == "GET_VM_STATE":
         raw_vm = payload.get("vm_id", "DemoVM")
@@ -1205,8 +1239,148 @@ def check_storage(path: Optional[str] = Query(None), authenticated: bool = Depen
     }
 
 
+def redact_secret(token: Optional[str]) -> str:
+    """Redacts secrets for safe logging."""
+    if not token:
+        return "<none>"
+    if len(token) <= 6:
+        return "***"
+    return f"{token[:4]}***{token[-2:]}"
+
+
+def load_config(config_file: str = "agent_config.json") -> dict:
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Could not load config file '{config_file}': {e}")
+    return {}
+
+
+def save_config(data: dict, config_file: str = "agent_config.json"):
+    try:
+        with open(config_file, "w") as f:
+            json.dump(data, f, indent=2)
+        logger.info(f"Saved configuration to '{config_file}'.")
+    except Exception as e:
+        logger.warning(f"Could not save config file '{config_file}': {e}")
+
+
+def enroll_with_control_plane(
+    server_url: str,
+    enrollment_secret: str,
+    role: str = "both",
+    device_id: Optional[str] = None
+) -> Optional[dict]:
+    import urllib.request
+    import urllib.error
+
+    api_url = server_url
+    if api_url.startswith("ws://"):
+        api_url = "http://" + api_url[5:]
+    elif api_url.startswith("wss://"):
+        api_url = "https://" + api_url[6:]
+    if "/ws/" in api_url:
+        api_url = api_url.split("/ws/")[0]
+    api_url = api_url.rstrip("/") + "/api/devices/enroll"
+
+    rc_ver, out_ver, _ = run_vbox(["--version"])
+    vbox_ver = out_ver if rc_ver == 0 else "Unknown"
+
+    body = {
+        "hostname": platform.node(),
+        "role": role,
+        "owner_name": os.getenv("USERNAME", "Windows User"),
+        "enrollment_secret": enrollment_secret,
+        "device_id": device_id or HOST_ID,
+        "vbox_version": vbox_ver,
+        "lan_ip": get_lan_ip(),
+        "tailscale_ip": get_tailscale_ip()
+    }
+
+    req = urllib.request.Request(
+        api_url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": "VMotion-Agent/2.1.0"},
+        method="POST"
+    )
+
+    try:
+        logger.info(f"Sending enrollment request to {api_url} (Device: {body['device_id']}, Role: {role})...")
+        with urllib.request.urlopen(req, timeout=10.0) as resp:
+            if resp.status == 200:
+                result = json.loads(resp.read().decode("utf-8"))
+                logger.info(f"[Enrollment] Successfully enrolled device '{result.get('device_id')}'!")
+                return result
+    except urllib.error.HTTPError as he:
+        logger.error(f"[Enrollment] Enrollment failed with HTTP {he.code}: {he.read().decode('utf-8', errors='ignore')}")
+    except Exception as e:
+        logger.error(f"[Enrollment] Enrollment error: {e}")
+    return None
+
+
 if __name__ == "__main__":
+    import argparse
     import uvicorn
-    port = int(os.getenv("VMOTION_AGENT_PORT", "8001"))
-    logger.info(f"Starting VMotion AI VirtualBox Agent '{HOST_ID}' on port {port}...")
-    uvicorn.run("agent:app", host="0.0.0.0", port=port, reload=False)
+
+    parser = argparse.ArgumentParser(description="VMotion AI - Oracle VirtualBox Host Agent")
+    parser.add_argument("--server", help="Control plane URL (e.g. http://127.0.0.1:8000 or https://vmotion-ai.onrender.com)")
+    parser.add_argument("--enroll", help="Enrollment secret key to automatically enroll device with control plane")
+    parser.add_argument("--role", choices=["source", "target", "both"], default="both", help="Host role (source, target, or both)")
+    parser.add_argument("--host-id", "--device-id", dest="host_id", help="Device ID / Host ID")
+    parser.add_argument("--token", "--secret", dest="token", help="Pre-configured agent secret token")
+    parser.add_argument("--config", default="agent_config.json", help="Path to JSON configuration file")
+    parser.add_argument("--port", type=int, default=int(os.getenv("VMOTION_AGENT_PORT", "8001")), help="Local REST port")
+
+    args = parser.parse_args()
+
+    # 1. Load existing config if available
+    cfg = load_config(args.config)
+
+    # 2. Update config from CLI flags
+    if args.server:
+        srv = args.server.rstrip("/")
+        if srv.startswith("http://"):
+            cfg["cloud_gateway_url"] = "ws://" + srv[7:] + "/ws/agent"
+        elif srv.startswith("https://"):
+            cfg["cloud_gateway_url"] = "wss://" + srv[8:] + "/ws/agent"
+        elif srv.startswith("ws://") or srv.startswith("wss://"):
+            cfg["cloud_gateway_url"] = srv if "/ws/agent" in srv else f"{srv}/ws/agent"
+        cfg["server_url"] = srv
+
+    if args.host_id:
+        cfg["host_id"] = args.host_id
+    if args.token:
+        cfg["agent_secret"] = args.token
+    if args.role:
+        cfg["role"] = args.role
+
+    # 3. Handle Auto-Enrollment
+    if args.enroll:
+        srv_url = cfg.get("server_url") or args.server or "http://127.0.0.1:8000"
+        enroll_res = enroll_with_control_plane(
+            server_url=srv_url,
+            enrollment_secret=args.enroll,
+            role=cfg.get("role", "both"),
+            device_id=cfg.get("host_id")
+        )
+        if enroll_res:
+            cfg["host_id"] = enroll_res["device_id"]
+            cfg["agent_secret"] = enroll_res["token"]
+            cfg["role"] = enroll_res.get("role", cfg.get("role", "both"))
+            save_config(cfg, args.config)
+        else:
+            logger.warning("Auto-enrollment failed. Proceeding with existing configuration.")
+
+    # 4. Apply configuration to runtime globals
+    if cfg.get("host_id"):
+        HOST_ID = cfg["host_id"]
+    if cfg.get("agent_secret"):
+        AGENT_SECRET = cfg["agent_secret"]
+    if cfg.get("cloud_gateway_url"):
+        CLOUD_GATEWAY_URL = cfg["cloud_gateway_url"]
+
+    port = args.port
+    logger.info(f"Starting VMotion AI VirtualBox Agent '{HOST_ID}' (Gateway: {CLOUD_GATEWAY_URL}, Secret: {redact_secret(AGENT_SECRET)}) on port {port}...")
+    uvicorn.run(app, host="0.0.0.0", port=port, reload=False)

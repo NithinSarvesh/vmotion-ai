@@ -103,10 +103,25 @@ async def websocket_agent_gateway_endpoint(
     # 1. Authenticate token
     expected_token = settings.GATEWAY_AGENT_TOKEN
     provided_token = token or websocket.headers.get("X-Agent-Secret", "")
-    if expected_token and provided_token != expected_token:
+
+    # Check if host is enrolled in SQLite DB
+    from app.db.database import get_device, hash_token
+    device_rec = get_device(host_id)
+    if device_rec and device_rec.get("is_revoked"):
+        logger.warning(f"[Agent Gateway] Rejected connection for revoked device '{host_id}'.")
+        await websocket.close(code=4001, reason="Unauthorized: Device has been revoked")
+        return
+
+    is_valid = False
+    if expected_token and provided_token == expected_token:
+        is_valid = True
+    elif device_rec and device_rec.get("token_hash") and hash_token(provided_token) == device_rec.get("token_hash"):
+        is_valid = True
+
+    if not is_valid:
         logger.warning(
             f"[Agent Gateway] Authentication rejected for host '{host_id}'. "
-            "Token mismatch: provided agent token does not match settings.GATEWAY_AGENT_TOKEN."
+            "Token mismatch: provided agent token does not match settings.GATEWAY_AGENT_TOKEN or device enrollment."
         )
         await websocket.close(code=4001, reason="Unauthorized: Invalid agent secret token")
         return

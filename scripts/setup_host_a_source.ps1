@@ -1,4 +1,4 @@
-# ==============================================================================
+﻿# ==============================================================================
 # VMotion AI - Host A (Source Laptop) Automated Setup & Agent Launcher
 # Connects to Public Cloud Control Plane over Outbound WSS
 # Real Cold / Offline VM Migration (OVA Export & LAN SMB Sharing)
@@ -105,7 +105,7 @@ try {
     Remove-Item $testFileA -Force
     Write-Host "[OK] Write permission confirmed on $SharedDir." -ForegroundColor Green
 } catch {
-    Write-Error "[PERMISSION ERROR] Cannot write to directory $SharedDir: $_"
+    Write-Error "[PERMISSION ERROR] Cannot write to directory ${SharedDir}: $_"
     exit 1
 }
 
@@ -220,3 +220,4 @@ if (Test-Path ".venv\Scripts\python.exe") {
     Write-Error "Python executable not found! Please run agent.py with Python 3.10+."
     exit 1
 }
+

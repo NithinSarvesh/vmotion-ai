@@ -9,10 +9,13 @@ from app.api.routes import router
 from app.api.websocket import ws_router
 from app.audit.logger import audit_logger
 from app.config import settings
+from app.db.database import init_db
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialize SQLite persistent database (devices, catalog, jobs, audit)
+    init_db()
     audit_logger.log_event(
         event_type="CLUSTER_CONNECTED",
         message=f"{settings.APP_NAME} Backend Engine initialized successfully.",

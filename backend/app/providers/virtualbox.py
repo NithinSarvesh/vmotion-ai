@@ -30,6 +30,7 @@ from app.providers.base import (
 from app.config import settings
 from app.audit.logger import audit_logger
 from app.gateway.agent_gateway import agent_gateway, AgentOfflineError, AgentCommandTimeoutError
+from app.db.database import update_migration_job, list_published_vms, list_devices
 
 logger = logging.getLogger("vmotion.provider.virtualbox")
 
@@ -377,6 +378,41 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
         )
         nodes.append(node_c)
 
+        # Include any custom enrolled devices from SQLite registry that are currently online
+        try:
+            enrolled_devices = list_devices(include_revoked=False)
+            existing_node_ids = {n.id for n in nodes}
+            for dev in enrolled_devices:
+                dev_id = dev["device_id"]
+                if dev_id not in existing_node_ids:
+                    sess = agent_gateway.get_session(dev_id)
+                    is_online = sess is not None and sess.is_alive(settings.AGENT_HEARTBEAT_TIMEOUT_SECONDS)
+                    if not is_online:
+                        continue
+                    t_dev = (sess.latest_telemetry or {}) if sess else {}
+                    dev_node = NodeTelemetry(
+                        id=dev_id,
+                        name=f"{dev.get('hostname', dev_id)} ({dev.get('role', 'device')})",
+                        status="online",
+                        cpu_cores=int(t_dev.get("cpu_count", 4)),
+                        cpu_percent=float(t_dev.get("cpu_percent", 20.0)),
+                        ram_total_mb=float(t_dev.get("ram_total_mb", 8192.0)),
+                        ram_used_mb=float(t_dev.get("ram_used_mb", 2048.0)),
+                        ram_percent=float(t_dev.get("ram_percent", 25.0)),
+                        net_rx_kbps=50.0,
+                        net_tx_kbps=50.0,
+                        disk_total_gb=500.0,
+                        disk_used_gb=100.0,
+                        shared_storage_accessible=storage_ok,
+                        quorum_healthy=True,
+                        quorum_status="HEALTHY",
+                        storage_status="HEALTHY" if storage_ok else "UNHEALTHY",
+                        active_vms=[vm.get("name") for vm in t_dev.get("vms", []) if vm.get("status") == "running"] if sess else []
+                    )
+                    nodes.append(dev_node)
+        except Exception as e:
+            logger.debug(f"Could not append enrolled devices to discover_nodes: {e}")
+
         return nodes
 
     async def discover_vms(self) -> List[VMTelemetry]:
@@ -468,6 +504,29 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                             disk_allocated_gb=25.0,
                             sla_priority="standard"
                         ))
+
+        # Discover VMs published to catalog from SQLite
+        try:
+            catalog_vms = list_published_vms()
+            for cvm in catalog_vms:
+                cname = cvm.get("name")
+                if cname and not any(v.vmid == cname for v in vms):
+                    vms.append(VMTelemetry(
+                        vmid=cname,
+                        name=cname,
+                        node_id=cvm.get("device_id", "vbox-host-a"),
+                        status=cvm.get("status", "stopped"),
+                        cpu_cores=int(cvm.get("cpu_cores", 2)),
+                        cpu_percent=25.0 if cvm.get("status") == "running" else 0.0,
+                        ram_allocated_mb=float(cvm.get("ram_mb", 2048.0)),
+                        ram_used_mb=float(cvm.get("ram_mb", 2048.0)) * 0.4 if cvm.get("status") == "running" else 0.0,
+                        ram_percent=40.0 if cvm.get("status") == "running" else 0.0,
+                        net_io_kbps=100.0 if cvm.get("status") == "running" else 0.0,
+                        disk_allocated_gb=float(cvm.get("disk_gb", 20.0)),
+                        sla_priority="standard"
+                    ))
+        except Exception as e:
+            logger.debug(f"Could not append catalog VMs: {e}")
 
         # If still no VMs are registered, expose the configured demo VM template
         if not vms:
@@ -695,6 +754,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
         """
         source_agent_id = self._node_to_agent_id(plan.source_node)
         target_agent_id = self._node_to_agent_id(plan.target_node)
+        is_same_computer = (source_agent_id == target_agent_id) or (plan.source_node == plan.target_node)
         job_id = task.task_id.replace("vbx-teleport-", "").replace("vbx-cold-", "").replace("vbx-", "")
         ova_filename = f"VMotion-Migration-{job_id}.ova"
         imported_vm_name = f"VMotion-Migrated-{job_id}"
@@ -715,28 +775,36 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 target_node=plan.target_node,
                 task_id=task.task_id,
                 message=f"[STAGE 1: PREFLIGHT] Verifying physical agent liveness, source VM '{plan.vm_id}', and storage quotas.",
-                details={"stage": "PREFLIGHT", "job_id": job_id}
+                details={"stage": "PREFLIGHT", "job_id": job_id, "is_same_computer": is_same_computer}
             )
+            update_migration_job(job_id=job_id, state=task.state, stage=task.stage, progress_percent=task.progress_percent)
 
             # Strict Physical Agent Liveness Verification (Fail-Closed)
             source_online = agent_gateway.is_agent_online(source_agent_id)
             target_online = agent_gateway.is_agent_online(target_agent_id)
 
-            if not source_online and not target_online:
-                raise RuntimeError(
-                    f"Both physical agents are offline ('{source_agent_id}' and '{target_agent_id}'). "
-                    "Cannot proceed with real cold migration. Launch setup scripts on both laptops."
-                )
-            if not source_online:
-                raise RuntimeError(
-                    f"Source host agent '{source_agent_id}' is offline. "
-                    "Verify that scripts/setup_host_a_source.ps1 is running and connected to cloud control plane."
-                )
-            if not target_online:
-                raise RuntimeError(
-                    f"Target host agent '{target_agent_id}' is offline. "
-                    "Verify that scripts/setup_host_b_target.ps1 is running and connected to cloud control plane."
-                )
+            if is_same_computer:
+                if not source_online:
+                    raise RuntimeError(
+                        f"Physical host agent '{source_agent_id}' is offline. "
+                        "Ensure the VMotion Agent is running on your machine to execute same-computer migration testing."
+                    )
+            else:
+                if not source_online and not target_online:
+                    raise RuntimeError(
+                        f"Both physical agents are offline ('{source_agent_id}' and '{target_agent_id}'). "
+                        "Cannot proceed with real cold migration. Launch setup scripts on both laptops."
+                    )
+                if not source_online:
+                    raise RuntimeError(
+                        f"Source host agent '{source_agent_id}' is offline. "
+                        "Verify that scripts/setup_host_a_source.ps1 is running and connected to cloud control plane."
+                    )
+                if not target_online:
+                    raise RuntimeError(
+                        f"Target host agent '{target_agent_id}' is offline. "
+                        "Verify that scripts/setup_host_b_target.ps1 is running and connected to cloud control plane."
+                    )
 
             # Pre-flight check on Source Agent
             resp_pre_src = await agent_gateway.dispatch_command(
@@ -783,6 +851,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 message=f"[STAGE 2: SOURCE SHUTDOWN] Requesting graceful ACPI shutdown for '{plan.vm_id}'.",
                 details={"stage": "SOURCE SHUTDOWN"}
             )
+            update_migration_job(job_id=job_id, state=task.state, stage=task.stage, progress_percent=task.progress_percent)
 
             resp_shut = await agent_gateway.dispatch_command(
                 agent_id=source_agent_id,
@@ -811,6 +880,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 message=f"[STAGE 3: EXPORT] Exporting '{plan.vm_id}' to appliance '{ova_filename}'.",
                 details={"stage": "EXPORT", "ova_filename": ova_filename}
             )
+            update_migration_job(job_id=job_id, state=task.state, stage=task.stage, progress_percent=task.progress_percent)
 
             source_ova_path = os.path.join(settings.VBOX_SHARED_STORAGE_PATH, ova_filename)
             resp_exp = await agent_gateway.dispatch_command(
@@ -839,6 +909,13 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
             task.sha256 = sha256
             task.export_duration_seconds = export_duration
             source_ova_path = resp_exp.data.get("ova_path", source_ova_path)
+            update_migration_job(
+                job_id=job_id,
+                file_size_bytes=task.file_size_bytes,
+                file_size_mb=task.file_size_mb,
+                sha256=task.sha256,
+                export_duration_seconds=task.export_duration_seconds
+            )
 
             # -------------------------------------------------------------
             # STAGE 4: TRANSFER
@@ -846,47 +923,75 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
             task.stage = "TRANSFER"
             task.progress_percent = 60.0
             task.updated_at = time.time()
-            audit_logger.log_event(
-                event_type="TASK_PROGRESS_UPDATE",
-                vm_id=plan.vm_id,
-                source_node=plan.source_node,
-                target_node=plan.target_node,
-                task_id=task.task_id,
-                message=f"[STAGE 4: TRANSFER] Transferring OVA package across LAN SMB to '{plan.target_node}'.",
-                details={"stage": "TRANSFER", "file_size_mb": task.file_size_mb}
-            )
 
-            session_src = agent_gateway.get_session(source_agent_id)
-            if not session_src or not session_src.lan_ip:
-                raise RuntimeError(f"Source agent '{source_agent_id}' does not have a registered LAN IP address for direct SMB transfer.")
-            src_lan_ip = session_src.lan_ip
-            unc_source_path = f"\\\\{src_lan_ip}\\VMotionShared\\{ova_filename}"
-            staging_dir = settings.VBOX_STAGING_PATH
-            staged_path = os.path.join(staging_dir, ova_filename)
+            if is_same_computer:
+                staged_path = source_ova_path
+                transfer_duration = 0.0
+                task.transfer_duration_seconds = 0.0
+                audit_logger.log_event(
+                    event_type="TASK_PROGRESS_UPDATE",
+                    vm_id=plan.vm_id,
+                    source_node=plan.source_node,
+                    target_node=plan.target_node,
+                    task_id=task.task_id,
+                    message=f"[STAGE 4: TRANSFER] Same-computer migration testing: using local exported artifact directly ({task.file_size_mb} MB).",
+                    details={"stage": "TRANSFER", "is_same_computer": True, "staged_path": staged_path}
+                )
+                update_migration_job(
+                    job_id=job_id,
+                    state=task.state,
+                    stage=task.stage,
+                    progress_percent=task.progress_percent,
+                    transfer_duration_seconds=0.0
+                )
+            else:
+                audit_logger.log_event(
+                    event_type="TASK_PROGRESS_UPDATE",
+                    vm_id=plan.vm_id,
+                    source_node=plan.source_node,
+                    target_node=plan.target_node,
+                    task_id=task.task_id,
+                    message=f"[STAGE 4: TRANSFER] Transferring OVA package across LAN SMB to '{plan.target_node}'.",
+                    details={"stage": "TRANSFER", "file_size_mb": task.file_size_mb}
+                )
+                session_src = agent_gateway.get_session(source_agent_id)
+                if not session_src or not session_src.lan_ip:
+                    raise RuntimeError(f"Source agent '{source_agent_id}' does not have a registered LAN IP address for direct SMB transfer.")
+                src_lan_ip = session_src.lan_ip
+                unc_source_path = f"\\\\{src_lan_ip}\\VMotionShared\\{ova_filename}"
+                staging_dir = settings.VBOX_STAGING_PATH
+                staged_path = os.path.join(staging_dir, ova_filename)
 
-            resp_trans = await agent_gateway.dispatch_command(
-                agent_id=target_agent_id,
-                command="TRANSFER_PACKAGE",
-                payload={
-                    "source_path": unc_source_path,
-                    "job_id": job_id,
-                    "staging_dir": staging_dir,
-                    "expected_sha256": task.sha256,
-                    "file_size_bytes": task.file_size_bytes
-                },
-                timeout_seconds=600.0
-            )
-            if resp_trans.status != "SUCCESS":
-                raise RuntimeError(f"OVA package transfer failed: {resp_trans.error or 'Transfer RPC rejected'}")
-            if not resp_trans.data:
-                raise RuntimeError("OVA package transfer returned empty response data.")
+                resp_trans = await agent_gateway.dispatch_command(
+                    agent_id=target_agent_id,
+                    command="TRANSFER_PACKAGE",
+                    payload={
+                        "source_path": unc_source_path,
+                        "job_id": job_id,
+                        "staging_dir": staging_dir,
+                        "expected_sha256": task.sha256,
+                        "file_size_bytes": task.file_size_bytes
+                    },
+                    timeout_seconds=600.0
+                )
+                if resp_trans.status != "SUCCESS":
+                    raise RuntimeError(f"OVA package transfer failed: {resp_trans.error or 'Transfer RPC rejected'}")
+                if not resp_trans.data:
+                    raise RuntimeError("OVA package transfer returned empty response data.")
 
-            transfer_duration = resp_trans.data.get("transfer_duration_seconds", 0.0)
-            staged_path = resp_trans.data.get("staged_path", staged_path)
-            if not staged_path:
-                raise RuntimeError("OVA package transfer did not report staged destination path.")
+                transfer_duration = resp_trans.data.get("transfer_duration_seconds", 0.0)
+                staged_path = resp_trans.data.get("staged_path", staged_path)
+                if not staged_path:
+                    raise RuntimeError("OVA package transfer did not report staged destination path.")
 
-            task.transfer_duration_seconds = transfer_duration
+                task.transfer_duration_seconds = transfer_duration
+                update_migration_job(
+                    job_id=job_id,
+                    state=task.state,
+                    stage=task.stage,
+                    progress_percent=task.progress_percent,
+                    transfer_duration_seconds=transfer_duration
+                )
 
             # -------------------------------------------------------------
             # STAGE 5: CHECKSUM VERIFIED
@@ -903,6 +1008,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 message=f"[STAGE 5: CHECKSUM VERIFIED] Validating SHA-256 digest ({task.sha256[:16]}...).",
                 details={"stage": "CHECKSUM VERIFIED", "sha256": task.sha256}
             )
+            update_migration_job(job_id=job_id, state=task.state, stage=task.stage, progress_percent=task.progress_percent)
 
             resp_chk = await agent_gateway.dispatch_command(
                 agent_id=target_agent_id,
@@ -930,6 +1036,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 message=f"[STAGE 6: IMPORT] Importing appliance into VirtualBox as '{imported_vm_name}'.",
                 details={"stage": "IMPORT", "imported_vm_name": imported_vm_name}
             )
+            update_migration_job(job_id=job_id, state=task.state, stage=task.stage, progress_percent=task.progress_percent)
 
             resp_imp = await agent_gateway.dispatch_command(
                 agent_id=target_agent_id,
@@ -943,6 +1050,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 raise RuntimeError("VBoxManage appliance import returned empty response data.")
 
             task.import_duration_seconds = resp_imp.data.get("import_duration_seconds", 0.0)
+            update_migration_job(job_id=job_id, import_duration_seconds=task.import_duration_seconds)
 
             # -------------------------------------------------------------
             # STAGE 7: DESTINATION STARTED
@@ -959,6 +1067,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 message=f"[STAGE 7: DESTINATION STARTED] Powering on imported VM '{imported_vm_name}'.",
                 details={"stage": "DESTINATION STARTED", "vm_name": imported_vm_name}
             )
+            update_migration_job(job_id=job_id, state=task.state, stage=task.stage, progress_percent=task.progress_percent)
 
             resp_start = await agent_gateway.dispatch_command(
                 agent_id=target_agent_id,
@@ -985,6 +1094,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 message=f"[STAGE 8: VERIFY] Confirming destination execution and health.",
                 details={"stage": "VERIFY", "vm_name": imported_vm_name}
             )
+            update_migration_job(job_id=job_id, state=task.state, stage=task.stage, progress_percent=task.progress_percent)
 
             resp_ver = await agent_gateway.dispatch_command(
                 agent_id=target_agent_id,
@@ -1010,6 +1120,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
             task.verified_at = now_done
             task.verification_details = {
                 "cold_migration": True,
+                "is_same_computer": is_same_computer,
                 "source_vm": plan.vm_id,
                 "source_node": plan.source_node,
                 "target_vm": imported_vm_name,
@@ -1031,6 +1142,19 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 message=f"[STAGE 9: SUCCESS] Cold OVA migration completed and verified: '{plan.vm_id}' -> '{imported_vm_name}'.",
                 details=task.verification_details
             )
+            update_migration_job(
+                job_id=job_id,
+                state="COMPLETED",
+                stage="SUCCESS",
+                progress_percent=100.0,
+                completed_at=now_done,
+                file_size_bytes=task.file_size_bytes,
+                file_size_mb=task.file_size_mb,
+                sha256=task.sha256,
+                export_duration_seconds=task.export_duration_seconds,
+                transfer_duration_seconds=task.transfer_duration_seconds,
+                import_duration_seconds=task.import_duration_seconds
+            )
 
         except Exception as e:
             logger.error(f"Cold migration error at stage '{task.stage}': {e}")
@@ -1046,6 +1170,13 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 task_id=task.task_id,
                 message=f"Migration failed at stage '{task.stage}': {str(e)}",
                 details={"stage": task.stage, "error": str(e)}
+            )
+            update_migration_job(
+                job_id=job_id,
+                state="FAILED",
+                stage=task.stage,
+                progress_percent=task.progress_percent,
+                error_message=str(e)
             )
 
     async def execute_migration(self, plan: MigrationPlan) -> str:

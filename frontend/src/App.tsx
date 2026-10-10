@@ -3,6 +3,7 @@ import Lenis from 'lenis';
 import { useWebSocketTelemetry } from './hooks/useWebSocketTelemetry';
 import { Header } from './components/Header';
 import { HeroSection } from './components/HeroSection';
+import { RoleSelectorSection } from './components/RoleSelectorSection';
 import { LiveDemoSection } from './components/LiveDemoSection';
 import { TopologyCanvas } from './components/TopologyCanvas';
 import { AiDecisionSection } from './components/AiDecisionSection';
@@ -53,7 +54,7 @@ export function App() {
 
   // Scroll spy to keep activeSection in sync with scroll position
   useEffect(() => {
-    const sectionIds = ['overview', 'live-demo', 'topology', 'ai-engine', 'safety', 'migrations', 'audit'];
+    const sectionIds = ['overview', 'onboarding', 'live-demo', 'topology', 'ai-engine', 'safety', 'migrations', 'audit'];
     const handleScroll = () => {
       const scrollPosition = window.scrollY + 220;
       for (let i = sectionIds.length - 1; i >= 0; i--) {
@@ -102,6 +103,15 @@ export function App() {
             proposals={proposals}
             onNavigateSection={handleNavigateSection}
             onTriggerAi={actions.refresh}
+          />
+        </section>
+
+        {/* Section: Physical Host Onboarding & Role Selection */}
+        <section id="section-onboarding" className="scroll-mt-20 pt-6">
+          <RoleSelectorSection
+            cluster={cluster}
+            agents={agents}
+            onTriggerRefresh={actions.refresh}
           />
         </section>
 

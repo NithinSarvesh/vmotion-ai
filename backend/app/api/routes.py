@@ -3,11 +3,18 @@ REST API Routes for VMotion AI Control Plane.
 Authoritative hypervisor provider is Oracle VirtualBox (VirtualBoxProvider).
 Supports Simulation mode for development/training and Live VirtualBox for real migration.
 """
+import os
+import secrets
+import hashlib
+import uuid
+import time
+import asyncio
 from fastapi import APIRouter, HTTPException, Query, Header
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Literal, Optional, Dict, Any
 
-from app.providers.base import ClusterState, MigrationTaskStatus, ProviderConnectionResult
+from app.providers.base import ClusterState, MigrationTaskStatus, ProviderConnectionResult, MigrationPlan
 from app.providers.simulation import SimulationProvider
 from app.providers.virtualbox import VirtualBoxProvider
 from app.providers.proxmox import ProxmoxVEProvider
@@ -25,6 +32,19 @@ from app.planner.planner import (
 from app.audit.logger import audit_logger, AuditEntry
 from app.adapter.observation import ObservationAdapter
 from app.config import settings
+from app.db.database import (
+    register_device,
+    get_device,
+    list_devices,
+    revoke_device,
+    publish_vm,
+    unpublish_vm,
+    list_published_vms,
+    create_migration_job,
+    get_migration_job,
+    update_migration_job,
+    list_migration_jobs,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -496,5 +516,331 @@ async def get_gateway_agents():
         "agents": agent_gateway.list_agents(),
         "total_connected": len(agent_gateway.list_agents()),
         "heartbeat_timeout_seconds": settings.AGENT_HEARTBEAT_TIMEOUT_SECONDS
+    }
+
+
+# -----------------------------------------------------------------------------
+# Device Enrollment Models & Routes
+# -----------------------------------------------------------------------------
+
+class DeviceEnrollRequest(BaseModel):
+    hostname: str
+    role: Literal["source", "target", "both"] = "both"
+    owner_name: Optional[str] = "Default User"
+    enrollment_secret: str
+    device_id: Optional[str] = None
+    vbox_version: Optional[str] = None
+    lan_ip: Optional[str] = None
+    tailscale_ip: Optional[str] = None
+
+
+@router.post("/devices/enroll")
+async def enroll_device(req: DeviceEnrollRequest):
+    """Enrolls a physical host/target computer into the persistent device registry."""
+    if req.enrollment_secret != settings.ENROLLMENT_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized: Invalid enrollment secret")
+
+    device_id = req.device_id or f"dev-{secrets.token_hex(4)}"
+    token = f"tok_{secrets.token_hex(16)}"
+
+    device = register_device(
+        device_id=device_id,
+        hostname=req.hostname,
+        role=req.role,
+        owner_name=req.owner_name or "Default User",
+        token=token,
+        vbox_version=req.vbox_version,
+        lan_ip=req.lan_ip,
+        tailscale_ip=req.tailscale_ip,
+    )
+
+    audit_logger.log_event(
+        event_type="DEVICE_ENROLLED",
+        message=f"Device '{device_id}' ({req.hostname}) enrolled with role '{req.role}'.",
+        details={"device_id": device_id, "hostname": req.hostname, "role": req.role}
+    )
+
+    return {
+        "status": "enrolled",
+        "device_id": device_id,
+        "token": token,
+        "role": req.role,
+        "hostname": req.hostname,
+        "device": device
+    }
+
+
+@router.get("/devices")
+async def get_devices(include_offline: bool = True):
+    """Lists registered devices, reflecting live gateway session status."""
+    from app.gateway.agent_gateway import agent_gateway
+    devs = list_devices(include_revoked=False)
+    for d in devs:
+        did = d["device_id"]
+        sess = agent_gateway.get_session(did)
+        if sess and sess.is_alive(settings.AGENT_HEARTBEAT_TIMEOUT_SECONDS):
+            d["status"] = "online"
+            if sess.lan_ip:
+                d["lan_ip"] = sess.lan_ip
+            if sess.tailscale_ip:
+                d["tailscale_ip"] = sess.tailscale_ip
+            if sess.vbox_version:
+                d["vbox_version"] = sess.vbox_version
+        else:
+            d["status"] = "offline"
+
+    if not include_offline:
+        devs = [d for d in devs if d["status"] == "online"]
+    return devs
+
+
+@router.delete("/devices/{device_id}")
+async def delete_device(device_id: str):
+    """Revokes a device's enrollment and terminates any active agent session."""
+    from app.gateway.agent_gateway import agent_gateway
+    device = get_device(device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found")
+
+    revoke_device(device_id)
+    sess = agent_gateway.get_session(device_id)
+    if sess and sess.websocket:
+        try:
+            await sess.websocket.close(code=4001, reason="Device revoked by operator")
+        except Exception:
+            pass
+        agent_gateway.unregister_agent(device_id)
+
+    audit_logger.log_event(
+        event_type="DEVICE_REVOKED",
+        message=f"Device '{device_id}' revoked by operator.",
+        details={"device_id": device_id}
+    )
+    return {"status": "revoked", "device_id": device_id}
+
+
+# -----------------------------------------------------------------------------
+# VM Catalog Models & Routes
+# -----------------------------------------------------------------------------
+
+class VMPublishRequest(BaseModel):
+    device_id: str
+    vm_name: str
+    vm_uuid: Optional[str] = None
+    os_type: Optional[str] = "other"
+    ram_mb: Optional[float] = 2048.0
+    cpu_cores: Optional[int] = 2
+    disk_gb: Optional[float] = 20.0
+    status: Optional[str] = "stopped"
+
+
+class VMUnpublishRequest(BaseModel):
+    device_id: str
+    vm_name: str
+
+
+@router.get("/catalog/vms")
+async def get_published_vms(device_id: Optional[str] = None):
+    """Lists VMs published by hosts, augmented with current device connectivity status."""
+    from app.gateway.agent_gateway import agent_gateway
+    vms = list_published_vms(device_id=device_id)
+    for vm in vms:
+        did = vm.get("device_id")
+        sess = agent_gateway.get_session(did)
+        if sess and sess.is_alive(settings.AGENT_HEARTBEAT_TIMEOUT_SECONDS):
+            vm["device_status"] = "online"
+        else:
+            vm["device_status"] = "offline"
+    return vms
+
+
+@router.post("/catalog/publish")
+async def publish_vm_endpoint(req: VMPublishRequest):
+    """Publishes a host VM to the shared migration catalog."""
+    vm = publish_vm(
+        vm_id=req.vm_name,
+        device_id=req.device_id,
+        name=req.vm_name,
+        status=req.status or "stopped",
+        cpu_cores=req.cpu_cores or 2,
+        ram_mb=req.ram_mb or 2048.0,
+        disk_gb=req.disk_gb or 20.0,
+        os_type=req.os_type or "other"
+    )
+    audit_logger.log_event(
+        event_type="VM_PUBLISHED",
+        vm_id=req.vm_name,
+        message=f"VM '{req.vm_name}' published to catalog by device '{req.device_id}'.",
+        details=vm
+    )
+    return {"status": "published", "vm": vm}
+
+
+@router.post("/catalog/unpublish")
+async def unpublish_vm_endpoint(req: VMUnpublishRequest):
+    """Unpublishes a VM from the catalog."""
+    success = unpublish_vm(vm_id=req.vm_name, device_id=req.device_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="VM not found in catalog")
+    audit_logger.log_event(
+        event_type="VM_UNPUBLISHED",
+        vm_id=req.vm_name,
+        message=f"VM '{req.vm_name}' unpublished from catalog by device '{req.device_id}'.",
+        details={"device_id": req.device_id, "vm_name": req.vm_name}
+    )
+    return {"status": "unpublished", "device_id": req.device_id, "vm_name": req.vm_name}
+
+
+# -----------------------------------------------------------------------------
+# Migration Jobs Models & Routes
+# -----------------------------------------------------------------------------
+
+class MigrationJobCreateRequest(BaseModel):
+    source_device_id: str
+    target_device_id: str
+    vm_name: str
+    vm_uuid: Optional[str] = None
+    direct_transfer_method: Optional[Literal["direct_lan", "tailscale", "s3_fallback", "same_host"]] = "direct_lan"
+    auto_start_target: Optional[bool] = False
+
+
+@router.post("/migrations/create")
+async def create_migration_job_endpoint(req: MigrationJobCreateRequest):
+    """Creates a new cold migration job and triggers execution."""
+    is_same = (req.source_device_id == req.target_device_id) or (req.direct_transfer_method == "same_host")
+    job_id = f"job-{uuid.uuid4().hex[:8]}"
+
+    job = create_migration_job(
+        job_id=job_id,
+        vm_id=req.vm_name,
+        source_device_id=req.source_device_id,
+        target_device_id=req.target_device_id,
+        is_same_computer=is_same,
+        start_vm_on_complete=req.auto_start_target or False
+    )
+
+    audit_logger.log_event(
+        event_type="MIGRATION_JOB_CREATED",
+        vm_id=req.vm_name,
+        source_node=req.source_device_id,
+        target_node=req.target_device_id,
+        task_id=job_id,
+        message=f"Cold migration job '{job_id}' created for VM '{req.vm_name}' ({req.source_device_id} -> {req.target_device_id}).",
+        details={"job_id": job_id, "is_same_computer": is_same, "direct_transfer_method": req.direct_transfer_method}
+    )
+
+    # If VirtualBox provider is active, launch cold migration job task
+    if isinstance(active_provider, VirtualBoxProvider):
+        plan = MigrationPlan(
+            plan_id=job["plan_id"],
+            vm_id=req.vm_name,
+            source_node=req.source_device_id,
+            target_node=req.target_device_id,
+            reason="Operator Triggered Cold OVA Migration",
+            created_at=time.time(),
+            estimated_duration_seconds=12.0
+        )
+        task = MigrationTaskStatus(
+            task_id=job_id,
+            plan_id=plan.plan_id,
+            vm_id=req.vm_name,
+            source_node=req.source_device_id,
+            target_node=req.target_device_id,
+            state="PREPARING",
+            progress_percent=5.0,
+            started_at=time.time(),
+            updated_at=time.time(),
+            stage="QUEUED"
+        )
+        migration_mgr.active_tasks[job_id] = task
+        asyncio.create_task(active_provider._run_cold_migration_job(task, plan))
+
+    return job
+
+
+@router.get("/migrations/jobs")
+async def list_jobs_endpoint(limit: int = 50):
+    """Lists persistent migration jobs from the SQLite database."""
+    return list_migration_jobs(limit=limit)
+
+
+@router.get("/migrations/jobs/{job_id}")
+async def get_job_endpoint(job_id: str):
+    """Retrieves full status and metrics for a specific migration job."""
+    job = get_migration_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Migration job '{job_id}' not found")
+    return job
+
+
+@router.post("/migrations/jobs/{job_id}/cancel")
+async def cancel_job_endpoint(job_id: str):
+    """Cancels a pending or queued migration job."""
+    job = get_migration_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Migration job '{job_id}' not found")
+    if job["state"] in ("COMPLETED", "VERIFIED"):
+        raise HTTPException(status_code=400, detail="Cannot cancel an already completed job")
+
+    update_migration_job(
+        job_id=job_id,
+        state="FAILED",
+        stage="CANCELLED",
+        error_message="Cancelled by operator"
+    )
+    if job_id in migration_mgr.active_tasks:
+        migration_mgr.active_tasks[job_id].state = "FAILED"
+        migration_mgr.active_tasks[job_id].stage = "CANCELLED"
+    return {"status": "cancelled", "job_id": job_id}
+
+
+# -----------------------------------------------------------------------------
+# Agent Packaging & Distribution Endpoint
+# -----------------------------------------------------------------------------
+
+@router.get("/agent/download")
+async def download_agent():
+    """Serves the standalone Windows Agent executable or packaging metadata."""
+    dist_path = os.path.join(settings.AGENT_DIST_DIR, settings.AGENT_BINARY_NAME)
+    if os.path.exists(dist_path):
+        return FileResponse(
+            path=dist_path,
+            filename=settings.AGENT_BINARY_NAME,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{settings.AGENT_BINARY_NAME}"'}
+        )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "available": False,
+            "message": "Standalone agent executable is not yet compiled on this server.",
+            "build_instructions": "Run 'python scripts/build_agent.py' to generate 'dist/vmotion-agent.exe'.",
+            "enrollment_secret": settings.ENROLLMENT_SECRET
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# Transfer Authorization Endpoint
+# -----------------------------------------------------------------------------
+
+class TransferAuthorizeRequest(BaseModel):
+    job_id: str
+    source_device_id: str
+    target_device_id: str
+    artifact_name: str
+
+
+@router.post("/transfers/authorize")
+async def authorize_transfer(req: TransferAuthorizeRequest):
+    """Issues a cryptographically signed one-time token for direct artifact transfer."""
+    token_str = f"{req.job_id}:{req.source_device_id}:{req.target_device_id}:{req.artifact_name}:{settings.GATEWAY_AGENT_TOKEN}"
+    auth_token = hashlib.sha256(token_str.encode("utf-8")).hexdigest()
+    return {
+        "status": "AUTHORIZED",
+        "job_id": req.job_id,
+        "artifact_name": req.artifact_name,
+        "auth_token": auth_token,
+        "expires_in_seconds": 3600
     }
 

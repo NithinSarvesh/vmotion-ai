@@ -317,3 +317,59 @@ export interface ClusterConfig {
     uri: string;
   };
 }
+
+export interface Device {
+  device_id: string;
+  hostname: string;
+  role: 'source' | 'target' | 'both';
+  owner_name: string;
+  agent_version: string;
+  vbox_version?: string | null;
+  lan_ip?: string | null;
+  tailscale_ip?: string | null;
+  status: 'online' | 'offline';
+  enrolled_at: number;
+  last_heartbeat_at: number;
+  is_revoked: boolean;
+}
+
+export interface PublishedVM {
+  vm_id: string;
+  device_id: string;
+  name: string;
+  status: 'running' | 'stopped' | 'paused' | 'migrating';
+  cpu_cores: number;
+  ram_mb: number;
+  disk_gb: number;
+  os_type: string;
+  is_published: boolean;
+  hostname?: string;
+  device_status?: string;
+  lan_ip?: string;
+  owner_name?: string;
+  updated_at: number;
+}
+
+export interface MigrationJob {
+  job_id: string;
+  plan_id: string;
+  vm_id: string;
+  source_device_id: string;
+  target_device_id: string;
+  state: string;
+  stage: string;
+  progress_percent: number;
+  file_size_bytes?: number;
+  file_size_mb?: number;
+  sha256?: string;
+  export_duration_seconds?: number;
+  transfer_duration_seconds?: number;
+  import_duration_seconds?: number;
+  imported_vm_name?: string;
+  error_message?: string;
+  is_same_computer: boolean;
+  start_vm_on_complete: boolean;
+  created_at: number;
+  updated_at: number;
+  completed_at?: number;
+}

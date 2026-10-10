@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ShieldCheck, Layers } from 'lucide-react';
+import { ShieldCheck, Layers, Download } from 'lucide-react';
 import type { ClusterState } from '../types';
 
 interface HeaderProps {
@@ -37,6 +37,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   const navItems = [
     { id: 'overview', label: '01 INTRO' },
+    { id: 'onboarding', label: '★ HOST ONBOARDING' },
     { id: 'live-demo', label: '★ LIVE DEMO' },
     { id: 'topology', label: '02 FABRIC' },
     { id: 'ai-engine', label: '03 AI ENGINE' },
@@ -122,8 +123,18 @@ export const Header: React.FC<HeaderProps> = ({
           })}
         </nav>
 
-        {/* Right: Governance Pill & Environment Switcher */}
+        {/* Right: Governance Pill & Agent Download & Infrastructure */}
         <div className="flex items-center space-x-3">
+          <a
+            href="/api/agent/download"
+            download="vmotion-agent.exe"
+            className="hidden sm:inline-flex items-center space-x-1.5 rounded-lg bg-blue-600 px-3 py-1.5 font-mono text-xs font-semibold text-white shadow-xs hover:bg-blue-700 transition-colors cursor-pointer"
+            title="Download Standalone Windows Agent (.exe)"
+          >
+            <Download className="h-3.5 w-3.5" />
+            <span>AGENT (.EXE)</span>
+          </a>
+
           <div className="hidden lg:flex items-center space-x-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 font-mono text-[11px] text-amber-800 shadow-xs">
             <ShieldCheck className="h-3.5 w-3.5 text-amber-600" />
             <span className="font-medium">HUMAN APPROVAL REQUIRED</span>

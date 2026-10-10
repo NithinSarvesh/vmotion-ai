@@ -143,6 +143,20 @@ class CloudAgentGateway:
                 f"[Gateway] Host Agent '{host_id}' registered successfully. "
                 f"Hostname: '{hostname}', LAN: '{lan_ip}', Tailscale: '{tailscale_ip}', VBox: '{vbox_version}'"
             )
+            try:
+                from app.db.database import enroll_device
+                enroll_device(
+                    device_id=host_id,
+                    hostname=hostname or host_id,
+                    role="both",
+                    agent_version=agent_version or "2.0.0",
+                    vbox_version=vbox_version,
+                    lan_ip=lan_ip,
+                    tailscale_ip=tailscale_ip
+                )
+            except Exception as dbe:
+                logger.debug(f"[Gateway] DB enrollment notice: {dbe}")
+
             audit_logger.log_event(
                 event_type="CLUSTER_CONNECTED",
                 message=f"Host Agent '{host_id}' connected via outbound WSS.",
@@ -167,6 +181,11 @@ class CloudAgentGateway:
                             fut.set_exception(AgentOfflineError(f"Agent '{host_id}' disconnected."))
                     self._sessions.pop(host_id, None)
                     logger.warning(f"[Gateway] Host Agent '{host_id}' unregistered / disconnected.")
+                    try:
+                        from app.db.database import set_device_status
+                        set_device_status(host_id, "offline")
+                    except Exception:
+                        pass
                     audit_logger.log_event(
                         event_type="CLUSTER_DISCONNECTED",
                         message=f"Host Agent '{host_id}' disconnected from Cloud Gateway.",
@@ -195,11 +214,30 @@ class CloudAgentGateway:
                 session.tailscale_ip = telemetry_data["tailscale_ip"]
             if "hostname" in telemetry_data and telemetry_data["hostname"]:
                 session.hostname = telemetry_data["hostname"]
+            try:
+                from app.db.database import update_device_heartbeat
+                update_device_heartbeat(
+                    device_id=host_id,
+                    lan_ip=session.lan_ip,
+                    tailscale_ip=session.tailscale_ip,
+                    vbox_version=session.vbox_version,
+                    status="online"
+                )
+            except Exception:
+                pass
 
     def record_heartbeat(self, host_id: str, latency_ms: Optional[float] = None):
         session = self._sessions.get(host_id)
         if session:
             session.last_heartbeat_at = time.time()
+            try:
+                from app.db.database import update_device_heartbeat
+                update_device_heartbeat(
+                    device_id=host_id,
+                    status="online"
+                )
+            except Exception:
+                pass
 
     def update_telemetry(self, host_id: str, telemetry_data: Dict[str, Any]):
         self.record_telemetry(host_id, telemetry_data)

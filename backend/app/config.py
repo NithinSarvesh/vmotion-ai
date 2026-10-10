@@ -2,7 +2,7 @@
 VMotion AI Configuration Module.
 Strict adherence to safety gates, human-in-the-loop controls, and provider abstractions.
 """
-from typing import Literal
+from typing import Literal, Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -62,6 +62,23 @@ class Settings(BaseSettings):
     SERVE_FRONTEND: bool = True
     HOST_A_ID: str = "vbox-host-a"
     HOST_B_ID: str = "vbox-host-b"
+
+    # Database Persistence
+    DATABASE_PATH: str = "vmotion.db"
+
+    # Device Enrollment & Registration
+    ENROLLMENT_SECRET: str = "vmotion-enroll-key"
+
+    # Agent Packaging & Distribution
+    AGENT_DIST_DIR: str = "dist"
+    AGENT_BINARY_NAME: str = "vmotion-agent.exe"
+
+    # S3-Compatible Object Storage Fallback (Optional Cross-Network Transfer)
+    S3_ENDPOINT_URL: Optional[str] = None
+    S3_BUCKET_NAME: Optional[str] = None
+    S3_ACCESS_KEY_ID: Optional[str] = None
+    S3_SECRET_ACCESS_KEY: Optional[str] = None
+    S3_REGION: str = "us-east-1"
     
     @model_validator(mode="after")
     def sync_agent_tokens(self) -> "Settings":

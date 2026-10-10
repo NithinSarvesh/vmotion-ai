@@ -27,7 +27,12 @@ AuditEventType = Literal[
     "VM_HEALTH_VERIFIED",
     "MIGRATION_VERIFIED",
     "MIGRATION_FAILED",
-    "CONFIG_UPDATED"
+    "CONFIG_UPDATED",
+    "DEVICE_ENROLLED",
+    "DEVICE_REVOKED",
+    "VM_PUBLISHED",
+    "VM_UNPUBLISHED",
+    "MIGRATION_JOB_CREATED"
 ]
 
 
@@ -95,6 +100,24 @@ class AuditLogger:
         try:
             with open(self.log_path, "a", encoding="utf-8") as f:
                 f.write(entry.model_dump_json() + "\n")
+        except Exception:
+            pass
+
+        # Persist to SQLite audit ledger
+        try:
+            from app.db.database import record_audit_event
+            record_audit_event(
+                event_id=entry_id,
+                timestamp=now,
+                time_iso=iso_str,
+                event_type=event_type,
+                message=message,
+                vm_id=vm_id,
+                source_node=source_node,
+                target_node=target_node,
+                task_id=task_id,
+                details=details
+            )
         except Exception:
             pass
 
