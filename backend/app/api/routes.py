@@ -699,11 +699,11 @@ class VMPublishRequest(BaseModel):
     device_id: str
     vm_name: str
     vm_uuid: Optional[str] = None
-    os_type: Optional[str] = "other"
-    ram_mb: Optional[float] = 2048.0
-    cpu_cores: Optional[int] = 2
-    disk_gb: Optional[float] = 20.0
-    status: Optional[str] = "stopped"
+    os_type: Optional[str] = None
+    ram_mb: Optional[float] = None
+    cpu_cores: Optional[int] = None
+    disk_gb: Optional[float] = None
+    status: Optional[str] = None
 
 
 class VMUnpublishRequest(BaseModel):
@@ -741,28 +741,42 @@ async def publish_vm_endpoint(
     # Authentic agent verification: inspect live agent telemetry for this device if available
     from app.gateway.agent_gateway import agent_gateway
     sess = agent_gateway.get_session(req.device_id)
-    real_status = req.status or "stopped"
-    real_cores = req.cpu_cores or 2
-    real_ram = req.ram_mb or 2048.0
-    real_disk = req.disk_gb or 20.0
-    real_os = req.os_type or "other"
 
+    found_vm = None
     if sess and sess.latest_telemetry and "vms" in sess.latest_telemetry:
         vms = sess.latest_telemetry.get("vms", [])
-        found_vm = next((v for v in vms if v.get("name") == req.vm_name or v.get("id") == req.vm_name), None)
-        if found_vm:
-            real_status = found_vm.get("status", real_status)
-            real_cores = found_vm.get("cpus", real_cores)
-            real_ram = found_vm.get("memory_mb", real_ram)
+        found_vm = next(
+            (v for v in vms if v.get("name") == req.vm_name or v.get("id") == req.vm_name or (req.vm_uuid and v.get("uuid") == req.vm_uuid)),
+            None
+        )
+
+    # In Live mode or when an agent session is active, reject if VM is unverified
+    if (settings.MODE == "live" or (sess and sess.is_alive(settings.AGENT_HEARTBEAT_TIMEOUT_SECONDS))) and not found_vm:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot publish VM: '{req.vm_name}' was not found in the authentic VirtualBox inventory reported by agent '{req.device_id}'."
+        )
+
+    if found_vm and req.vm_uuid and found_vm.get("uuid") and req.vm_uuid != found_vm.get("uuid"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot publish VM: UUID mismatch. Requested '{req.vm_uuid}', but agent inventory has '{found_vm.get('uuid')}'."
+        )
+
+    real_status = (found_vm.get("status") if found_vm else None) or req.status or "stopped"
+    real_cores = (found_vm.get("cpus") or found_vm.get("cpu_cores") if found_vm else None) or req.cpu_cores or 0
+    real_ram = (found_vm.get("memory_mb") or found_vm.get("ram_mb") if found_vm else None) or req.ram_mb or 0.0
+    real_disk = (found_vm.get("disk_gb") if found_vm else None) or req.disk_gb or 0.0
+    real_os = (found_vm.get("os_type") if found_vm else None) or req.os_type or "other"
 
     vm = publish_vm(
-        vm_id=req.vm_name,
+        vm_id=found_vm.get("id", req.vm_name) if found_vm else req.vm_name,
         device_id=req.device_id,
         name=req.vm_name,
         status=real_status,
-        cpu_cores=real_cores,
-        ram_mb=real_ram,
-        disk_gb=real_disk,
+        cpu_cores=int(real_cores),
+        ram_mb=float(real_ram),
+        disk_gb=float(real_disk),
         os_type=real_os
     )
     audit_logger.log_event(
@@ -844,6 +858,33 @@ async def create_migration_job_endpoint(
     if tgt_dev.get("role") not in ("target", "both"):
         raise HTTPException(status_code=400, detail=f"Device '{req.target_device_id}' is registered as source-only.")
 
+    # Authentic agent inventory verification: verify VM exists on source device if source agent is connected or in live mode
+    from app.gateway.agent_gateway import agent_gateway
+    sess_src = agent_gateway.get_session(req.source_device_id)
+    if (settings.MODE == "live" or (sess_src and sess_src.is_alive(settings.AGENT_HEARTBEAT_TIMEOUT_SECONDS))):
+        if not sess_src or not sess_src.latest_telemetry:
+            if settings.MODE == "live":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot initiate migration: Source device '{req.source_device_id}' is not connected or has not reported telemetry."
+                )
+        else:
+            src_vms = sess_src.latest_telemetry.get("vms", [])
+            matched_vm = next(
+                (v for v in src_vms if v.get("name") == req.vm_name or v.get("id") == req.vm_name or (req.vm_uuid and v.get("uuid") == req.vm_uuid)),
+                None
+            )
+            if not matched_vm:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot initiate migration: VM '{req.vm_name}' does not exist in the authentic VirtualBox inventory of source device '{req.source_device_id}'."
+                )
+            if req.vm_uuid and matched_vm.get("uuid") and req.vm_uuid != matched_vm.get("uuid"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"VM UUID mismatch: requested '{req.vm_uuid}', but source device reports UUID '{matched_vm.get('uuid')}'."
+                )
+
     is_same = (req.source_device_id == req.target_device_id) or (req.direct_transfer_method == "same_host")
     job_id = f"job-{uuid.uuid4().hex[:8]}"
 
@@ -896,17 +937,44 @@ async def create_migration_job_endpoint(
 
 
 @router.get("/migrations/jobs")
-async def list_jobs_endpoint(limit: int = 50):
-    """Lists persistent migration jobs from the SQLite database."""
-    return list_migration_jobs(limit=limit)
+async def list_jobs_endpoint(
+    limit: int = 50,
+    caller: CallerIdentity = Depends(get_caller_identity)
+):
+    """Lists persistent migration jobs from the SQLite database. Requires Operator or Device authentication."""
+    if not caller.is_operator and not caller.is_device:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required: Must provide Operator API Key or enrolled Device credentials to view migration jobs."
+        )
+    all_jobs = list_migration_jobs(limit=limit)
+    if caller.is_operator:
+        return all_jobs
+    return [
+        j for j in all_jobs
+        if j.get("source_device_id") == caller.device_id or j.get("target_device_id") == caller.device_id
+    ]
 
 
 @router.get("/migrations/jobs/{job_id}")
-async def get_job_endpoint(job_id: str):
-    """Retrieves full status and metrics for a specific migration job."""
+async def get_job_endpoint(
+    job_id: str,
+    caller: CallerIdentity = Depends(get_caller_identity)
+):
+    """Retrieves full status and metrics for a specific migration job. Requires Operator or participating Device."""
+    if not caller.is_operator and not caller.is_device:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required: Must provide Operator API Key or enrolled Device credentials to view migration job."
+        )
     job = get_migration_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Migration job '{job_id}' not found")
+    if not caller.is_operator and caller.device_id not in (job.get("source_device_id"), job.get("target_device_id")):
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Device is not authorized to access this migration job."
+        )
     return job
 
 
@@ -989,24 +1057,63 @@ async def authorize_transfer(
     caller: CallerIdentity = Depends(get_caller_identity)
 ):
     """Issues a cryptographically signed, expiring, single-use token for direct artifact transfer."""
+    if not caller.is_operator and not caller.is_device:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required: Transfer authorization requires Operator API Key or enrolled Device credentials."
+        )
+
     job = get_migration_job(req.job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Migration job '{req.job_id}' not found")
 
-    if not caller.is_operator and not (caller.is_device and caller.device_id in (req.source_device_id, req.target_device_id)):
+    # Strict endpoint binding: verify request's source and target exactly match stored job endpoints
+    if req.source_device_id != job.get("source_device_id") or req.target_device_id != job.get("target_device_id"):
         raise HTTPException(
-            status_code=403,
-            detail="Forbidden: Transfer authorization requires Operator credentials or authorized device participation."
+            status_code=400,
+            detail=f"Transfer endpoint mismatch: Job '{req.job_id}' is bounded to {job.get('source_device_id')} -> {job.get('target_device_id')}, but request specified {req.source_device_id} -> {req.target_device_id}."
         )
 
-    if job["state"] in ("FAILED", "CANCELLED"):
-        raise HTTPException(status_code=400, detail="Cannot authorize transfer for failed or cancelled job.")
+    # Caller authorization: operator or participating device
+    if not caller.is_operator and caller.device_id not in (req.source_device_id, req.target_device_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Caller device is not a participating endpoint for this migration job."
+        )
+
+    # Job state check
+    if job["state"] in ("FAILED", "CANCELLED", "COMPLETED"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot authorize transfer: migration job '{req.job_id}' is in terminal state '{job['state']}'."
+        )
+
+    # Device verification and role checks
+    src_dev = get_device(req.source_device_id)
+    if not src_dev or src_dev.get("is_revoked"):
+        raise HTTPException(status_code=400, detail=f"Source device '{req.source_device_id}' is not enrolled or is revoked.")
+    if src_dev.get("role") not in ("source", "both"):
+        raise HTTPException(status_code=400, detail=f"Source device '{req.source_device_id}' lacks source role permission.")
+
+    tgt_dev = get_device(req.target_device_id)
+    if not tgt_dev or tgt_dev.get("is_revoked"):
+        raise HTTPException(status_code=400, detail=f"Target device '{req.target_device_id}' is not enrolled or is revoked.")
+    if tgt_dev.get("role") not in ("target", "both"):
+        raise HTTPException(status_code=400, detail=f"Target device '{req.target_device_id}' lacks target role permission.")
+
+    # Artifact identity validation (prevent directory traversal and ensure safe filename)
+    artifact = req.artifact_name.strip()
+    if not artifact or ".." in artifact or "/" in artifact or "\\" in artifact:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid artifact name '{req.artifact_name}': Path traversal or directory separators are prohibited."
+        )
 
     auth_record = create_transfer_authorization(
         job_id=req.job_id,
         source_device_id=req.source_device_id,
         target_device_id=req.target_device_id,
-        artifact_name=req.artifact_name
+        artifact_name=artifact
     )
 
     return {

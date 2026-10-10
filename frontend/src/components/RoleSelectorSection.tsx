@@ -65,7 +65,7 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
       const [devRes, vmRes, jobRes] = await Promise.all([
         fetch('/api/devices', { headers: opHeaders }),
         fetch('/api/catalog/vms'),
-        fetch('/api/migrations/jobs')
+        fetch('/api/migrations/jobs', { headers: opHeaders })
       ]);
 
       if (devRes.ok) {
@@ -137,11 +137,7 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
         },
         body: JSON.stringify({
           device_id: publishDeviceId,
-          vm_name: publishVmName,
-          status: 'stopped',
-          cpu_cores: 2,
-          ram_mb: 2048,
-          disk_gb: 20
+          vm_name: publishVmName
         })
       });
 

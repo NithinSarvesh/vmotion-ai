@@ -452,3 +452,207 @@ def test_unsafe_proposal_state_transitions_rejected():
     proposal.transition_to(ProposalState.SAFETY_CHECK)
     assert proposal.status == ProposalState.SAFETY_CHECK
 
+
+# -----------------------------------------------------------------------------
+# 7. Final Security Hardening Regression Tests
+# -----------------------------------------------------------------------------
+
+def test_migration_jobs_read_authorization_and_ownership():
+    """Verifies that GET /api/migrations/jobs and /jobs/{id} require auth and enforce device scoping."""
+    op_headers = {"X-Operator-Key": settings.OPERATOR_API_KEY}
+
+    # Register devices with explicit tokens
+    raw_tok_a = f"tok-read-a-{uuid.uuid4().hex[:8]}"
+    raw_tok_b = f"tok-read-b-{uuid.uuid4().hex[:8]}"
+    raw_tok_c = f"tok-read-c-{uuid.uuid4().hex[:8]}"
+    dev_a = register_device(device_id=f"dev-read-a-{uuid.uuid4().hex[:6]}", hostname="Host-A", role="both", token=raw_tok_a)
+    dev_b = register_device(device_id=f"dev-read-b-{uuid.uuid4().hex[:6]}", hostname="Host-B", role="both", token=raw_tok_b)
+    dev_c = register_device(device_id=f"dev-read-c-{uuid.uuid4().hex[:6]}", hostname="Host-C", role="both", token=raw_tok_c)
+
+    tok_a = {"X-Device-Token": raw_tok_a}
+    tok_b = {"X-Device-Token": raw_tok_b}
+    tok_c = {"X-Device-Token": raw_tok_c}
+
+    job_id = f"job-read-{uuid.uuid4().hex[:8]}"
+    create_migration_job(
+        job_id=job_id,
+        vm_id="Protected-VM",
+        source_device_id=dev_a["device_id"],
+        target_device_id=dev_b["device_id"]
+    )
+
+    # 1. Anonymous access to list is blocked (401)
+    assert client.get("/api/migrations/jobs").status_code == 401
+
+    # 2. Anonymous access to specific job is blocked (401)
+    assert client.get(f"/api/migrations/jobs/{job_id}").status_code == 401
+
+    # 3. Operator key can access list and job
+    op_list = client.get("/api/migrations/jobs", headers=op_headers)
+    assert op_list.status_code == 200
+    assert any(j["job_id"] == job_id for j in op_list.json())
+
+    op_job = client.get(f"/api/migrations/jobs/{job_id}", headers=op_headers)
+    assert op_job.status_code == 200
+    assert op_job.json()["job_id"] == job_id
+
+    # 4. Participating device (dev_a) can access the job
+    assert client.get(f"/api/migrations/jobs/{job_id}", headers=tok_a).status_code == 200
+
+    # 5. Participating device (dev_b) can access the job
+    assert client.get(f"/api/migrations/jobs/{job_id}", headers=tok_b).status_code == 200
+
+    # 6. Unrelated device (dev_c) gets 403 Forbidden for dev_a -> dev_b job
+    unrelated_job = client.get(f"/api/migrations/jobs/{job_id}", headers=tok_c)
+    assert unrelated_job.status_code == 403
+
+    # 7. Device list call filters out jobs dev_c does not participate in
+    dev_c_list = client.get("/api/migrations/jobs", headers=tok_c)
+    assert dev_c_list.status_code == 200
+    assert not any(j["job_id"] == job_id for j in dev_c_list.json())
+
+
+def test_transfer_authorize_endpoint_binding_and_safety():
+    """Verifies strict endpoint binding, device roles, job state, caller ownership, and artifact safety in /transfers/authorize."""
+    op_headers = {"X-Operator-Key": settings.OPERATOR_API_KEY}
+
+    raw_src_tok = f"tok-src-{uuid.uuid4().hex[:8]}"
+    raw_tgt_tok = f"tok-tgt-{uuid.uuid4().hex[:8]}"
+    raw_other_tok = f"tok-oth-{uuid.uuid4().hex[:8]}"
+
+    src = register_device(device_id=f"dev-xfer-src-{uuid.uuid4().hex[:6]}", hostname="Xfer-Src", role="source", token=raw_src_tok)
+    tgt = register_device(device_id=f"dev-xfer-tgt-{uuid.uuid4().hex[:6]}", hostname="Xfer-Tgt", role="target", token=raw_tgt_tok)
+    other = register_device(device_id=f"dev-xfer-oth-{uuid.uuid4().hex[:6]}", hostname="Xfer-Other", role="both", token=raw_other_tok)
+
+    src_tok = {"X-Device-Token": raw_src_tok}
+    other_tok = {"X-Device-Token": raw_other_tok}
+
+    job_id = f"job-bind-{uuid.uuid4().hex[:8]}"
+    create_migration_job(
+        job_id=job_id,
+        vm_id="Binding-VM",
+        source_device_id=src["device_id"],
+        target_device_id=tgt["device_id"]
+    )
+
+    base_payload = {
+        "job_id": job_id,
+        "source_device_id": src["device_id"],
+        "target_device_id": tgt["device_id"],
+        "artifact_name": "Binding-VM.ova"
+    }
+
+    # 1. Unauthenticated request rejected (401)
+    assert client.post("/api/transfers/authorize", json=base_payload).status_code == 401
+
+    # 2. Forged endpoints: mismatch with stored job (400)
+    forged_payload = dict(base_payload, target_device_id=other["device_id"])
+    forged_resp = client.post("/api/transfers/authorize", json=forged_payload, headers=op_headers)
+    assert forged_resp.status_code == 400
+    assert "Transfer endpoint mismatch" in forged_resp.json()["detail"]
+
+    # 3. Unrelated device caller rejected (403)
+    unrelated_resp = client.post("/api/transfers/authorize", json=base_payload, headers=other_tok)
+    assert unrelated_resp.status_code == 403
+
+    # 4. Path traversal in artifact_name rejected (400)
+    traversal_payload = dict(base_payload, artifact_name="../secret.ova")
+    trav_resp = client.post("/api/transfers/authorize", json=traversal_payload, headers=op_headers)
+    assert trav_resp.status_code == 400
+
+    # 5. Non-existent job rejected (404)
+    missing_payload = dict(base_payload, job_id="job-nonexistent")
+    assert client.post("/api/transfers/authorize", json=missing_payload, headers=op_headers).status_code == 404
+
+    # 6. Valid authorization with participating device succeeds (200)
+    auth_resp = client.post("/api/transfers/authorize", json=base_payload, headers=src_tok)
+    assert auth_resp.status_code == 200
+    data = auth_resp.json()
+    assert data["status"] == "AUTHORIZED"
+    assert "auth_token" in data
+    assert "signature" in data
+
+
+def test_authentic_vm_inventory_rejection_and_verification():
+    """Verifies that publishing and migration creation reject unverified VMs when agent is online."""
+    from app.gateway.agent_gateway import agent_gateway, AgentSession
+
+    op_headers = {"X-Operator-Key": settings.OPERATOR_API_KEY}
+    dev_id = f"dev-auth-vm-{uuid.uuid4().hex[:6]}"
+    raw_dev_tok = f"tok-auth-{uuid.uuid4().hex[:8]}"
+    dev = register_device(device_id=dev_id, hostname="VM-Host", role="both", token=raw_dev_tok)
+    dev_tok = {"X-Device-Token": raw_dev_tok}
+
+    # Register an active agent session with live telemetry containing only "Real-VM"
+    sess = AgentSession(
+        host_id=dev_id,
+        hostname="VM-Host",
+        websocket=None,
+        lan_ip="192.168.1.150"
+    )
+    sess.latest_telemetry = {
+        "vms": [
+            {
+                "id": "Real-VM",
+                "name": "Real-VM",
+                "uuid": "uuid-real-1234",
+                "status": "running",
+                "cpus": 4,
+                "memory_mb": 8192.0,
+                "os_type": "Ubuntu_64"
+            }
+        ]
+    }
+    agent_gateway._sessions[dev_id] = sess
+
+    # 1. Publishing a non-existent VM is rejected (400)
+    bad_pub = client.post("/api/catalog/publish", json={
+        "device_id": dev_id,
+        "vm_name": "Ghost-VM"
+    }, headers=dev_tok)
+    assert bad_pub.status_code == 400
+    assert "was not found in the authentic VirtualBox inventory" in bad_pub.json()["detail"]
+
+    # 2. Publishing an existing VM with wrong UUID is rejected (400)
+    mismatch_pub = client.post("/api/catalog/publish", json={
+        "device_id": dev_id,
+        "vm_name": "Real-VM",
+        "vm_uuid": "uuid-wrong-9999"
+    }, headers=dev_tok)
+    assert mismatch_pub.status_code == 400
+    assert "UUID mismatch" in mismatch_pub.json()["detail"]
+
+    # 3. Publishing the authentic VM succeeds and inherits measured specifications
+    good_pub = client.post("/api/catalog/publish", json={
+        "device_id": dev_id,
+        "vm_name": "Real-VM",
+        "vm_uuid": "uuid-real-1234"
+    }, headers=dev_tok)
+    assert good_pub.status_code == 200
+    pub_data = good_pub.json()["vm"]
+    assert pub_data["cpu_cores"] == 4
+    assert pub_data["ram_mb"] == 8192.0
+    assert pub_data["os_type"] == "Ubuntu_64"
+
+    # 4. Creating a migration job for a VM that does NOT exist on source agent is rejected (400)
+    bad_mig = client.post("/api/migrations/create", json={
+        "source_device_id": dev_id,
+        "target_device_id": dev_id,
+        "vm_name": "Fake-VM",
+        "direct_transfer_method": "same_host"
+    }, headers=op_headers)
+    assert bad_mig.status_code == 400
+    assert "does not exist in the authentic VirtualBox inventory" in bad_mig.json()["detail"]
+
+    # 5. Creating a migration job for the verified VM succeeds (200)
+    good_mig = client.post("/api/migrations/create", json={
+        "source_device_id": dev_id,
+        "target_device_id": dev_id,
+        "vm_name": "Real-VM",
+        "vm_uuid": "uuid-real-1234",
+        "direct_transfer_method": "same_host"
+    }, headers=op_headers)
+    assert good_mig.status_code == 200
+    assert good_mig.json()["vm_id"] == "Real-VM"
+
+

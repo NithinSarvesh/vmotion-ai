@@ -149,8 +149,11 @@ def test_migration_job_creation_and_tracking():
     assert same_job["is_same_computer"] == 1 or same_job["is_same_computer"] is True
     job_id = same_job["job_id"]
 
-    # 2. Retrieve job status
-    get_resp = client.get(f"/api/migrations/jobs/{job_id}")
+    # 2. Retrieve job status (requires auth)
+    unauth_get = client.get(f"/api/migrations/jobs/{job_id}")
+    assert unauth_get.status_code == 401
+
+    get_resp = client.get(f"/api/migrations/jobs/{job_id}", headers=op_headers)
     assert get_resp.status_code == 200
     assert get_resp.json()["job_id"] == job_id
 
@@ -163,7 +166,8 @@ def test_migration_job_creation_and_tracking():
     assert cancel_resp.json()["status"] == "cancelled"
 
     # 4. Verify cancelled state
-    check_resp = client.get(f"/api/migrations/jobs/{job_id}")
+    check_resp = client.get(f"/api/migrations/jobs/{job_id}", headers=op_headers)
+    assert check_resp.status_code == 200
     assert check_resp.json()["state"] == "FAILED"
     assert check_resp.json()["stage"] == "CANCELLED"
 
@@ -195,14 +199,14 @@ def test_transfer_authorization():
     assert job_resp.status_code == 200
     job_id = job_resp.json()["job_id"]
 
-    # Unauthenticated transfer authorization should fail with 403
+    # Unauthenticated transfer authorization should fail with 401 or 403
     unauth_resp = client.post("/api/transfers/authorize", json={
         "job_id": job_id,
         "source_device_id": "dev-src",
         "target_device_id": "dev-tgt",
         "artifact_name": f"VMotion-Migration-{job_id}.ova"
     })
-    assert unauth_resp.status_code == 403
+    assert unauth_resp.status_code in (401, 403)
 
     # Authenticated authorization
     resp = client.post("/api/transfers/authorize", json={

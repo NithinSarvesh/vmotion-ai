@@ -216,7 +216,7 @@ def sample_host_telemetry() -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Discover registered and running VMs
+    # Discover registered and running VMs with authentic specifications
     rc_all, out_all, _ = run_vbox(["list", "vms"], timeout=5.0)
     rc_run, out_run, _ = run_vbox(["list", "runningvms"], timeout=5.0)
     running_names = set()
@@ -230,24 +230,68 @@ def sample_host_telemetry() -> Dict[str, Any]:
         for line in out_all.splitlines():
             if '"' in line:
                 name = line.split('"')[1]
+                # Extract UUID if present: "VM_Name" {12345678-1234-...}
+                vm_uuid = None
+                if "{" in line and "}" in line:
+                    vm_uuid = line[line.find("{") + 1 : line.find("}")]
                 is_running = name in running_names
+
+                # Query authentic showvminfo for accurate hardware details
+                cpus = 0
+                memory_mb = 0.0
+                os_type = "other"
+                rc_info, out_info, _ = run_vbox(["showvminfo", name, "--machinereadable"], timeout=3.0)
+                if rc_info == 0:
+                    info = parse_machine_readable_output(out_info)
+                    if not vm_uuid and "UUID" in info:
+                        vm_uuid = info["UUID"]
+                    try:
+                        cpus = int(info.get("cpus", 0))
+                    except (ValueError, TypeError):
+                        pass
+                    try:
+                        memory_mb = float(info.get("memory", 0.0))
+                    except (ValueError, TypeError):
+                        pass
+                    os_type = info.get("ostype", "other")
+
                 all_vms.append({
                     "id": name,
                     "name": name,
+                    "uuid": vm_uuid,
                     "status": "running" if is_running else "stopped",
-                    "cpus": 2,
-                    "memory_mb": 2048,
+                    "cpus": cpus,
+                    "memory_mb": memory_mb,
+                    "os_type": os_type,
                     "cpu_percent": 15.0 if is_running else 0.0,
                     "ram_percent": 30.0 if is_running else 0.0
                 })
     elif rc_run == 0:
         for name in running_names:
+            cpus = 0
+            memory_mb = 0.0
+            os_type = "other"
+            rc_info, out_info, _ = run_vbox(["showvminfo", name, "--machinereadable"], timeout=3.0)
+            if rc_info == 0:
+                info = parse_machine_readable_output(out_info)
+                try:
+                    cpus = int(info.get("cpus", 0))
+                except (ValueError, TypeError):
+                    pass
+                try:
+                    memory_mb = float(info.get("memory", 0.0))
+                except (ValueError, TypeError):
+                    pass
+                os_type = info.get("ostype", "other")
+
             all_vms.append({
                 "id": name,
                 "name": name,
+                "uuid": None,
                 "status": "running",
-                "cpus": 2,
-                "memory_mb": 2048,
+                "cpus": cpus,
+                "memory_mb": memory_mb,
+                "os_type": os_type,
                 "cpu_percent": 15.0,
                 "ram_percent": 30.0
             })
@@ -1513,7 +1557,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="VMotion AI - Oracle VirtualBox Host Agent")
     parser.add_argument("--server", help="Control plane URL (e.g. http://127.0.0.1:8000 or https://vmotion-ai.onrender.com)")
-    parser.add_argument("--enroll", help="Enrollment secret key to automatically enroll device with control plane")
+    parser.add_argument("--enroll", nargs="?", const=True, default=None, help="Enrollment secret key (or flag) to automatically enroll device with control plane")
     parser.add_argument("--role", choices=["source", "target", "both"], default="both", help="Host role (source, target, or both)")
     parser.add_argument("--host-id", "--device-id", dest="host_id", help="Device ID / Host ID")
     parser.add_argument("--token", "--secret", dest="token", help="Pre-configured agent secret token")
@@ -1544,21 +1588,30 @@ if __name__ == "__main__":
         cfg["role"] = args.role
 
     # 3. Handle Auto-Enrollment
-    if args.enroll:
-        srv_url = cfg.get("server_url") or args.server or "http://127.0.0.1:8000"
-        enroll_res = enroll_with_control_plane(
-            server_url=srv_url,
-            enrollment_secret=args.enroll,
-            role=cfg.get("role", "both"),
-            device_id=cfg.get("host_id")
-        )
-        if enroll_res:
-            cfg["host_id"] = enroll_res["device_id"]
-            cfg["agent_secret"] = enroll_res["token"]
-            cfg["role"] = enroll_res.get("role", cfg.get("role", "both"))
-            save_config(cfg, args.config)
+    if args.enroll is not None:
+        enroll_secret = None
+        if isinstance(args.enroll, str) and args.enroll != "true":
+            enroll_secret = args.enroll
         else:
-            logger.warning("Auto-enrollment failed. Proceeding with existing configuration.")
+            enroll_secret = args.token or cfg.get("enrollment_secret") or os.getenv("VMOTION_ENROLLMENT_SECRET")
+
+        if not enroll_secret:
+            logger.error("Enrollment requested via --enroll, but no enrollment secret was supplied (via --enroll <secret>, --token <secret>, or VMOTION_ENROLLMENT_SECRET).")
+        else:
+            srv_url = cfg.get("server_url") or args.server or "http://127.0.0.1:8000"
+            enroll_res = enroll_with_control_plane(
+                server_url=srv_url,
+                enrollment_secret=enroll_secret,
+                role=cfg.get("role", "both"),
+                device_id=cfg.get("host_id")
+            )
+            if enroll_res:
+                cfg["host_id"] = enroll_res["device_id"]
+                cfg["agent_secret"] = enroll_res["token"]
+                cfg["role"] = enroll_res.get("role", cfg.get("role", "both"))
+                save_config(cfg, args.config)
+            else:
+                logger.warning("Auto-enrollment failed. Proceeding with existing configuration.")
 
     # 4. Apply configuration to runtime globals
     if cfg.get("host_id"):

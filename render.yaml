@@ -3,7 +3,10 @@ services:
     name: vmotion-ai-control-plane
     env: docker
     dockerfilePath: Dockerfile
-    plan: free
+    # Persistent disk mounts on Render require Starter plan ($7/mo + $0.25/GB disk) or higher.
+    # On Render Free tier, persistent disks are unsupported and file storage is ephemeral across redeploys.
+    # For durable zero-cost storage on Free tier, an external database (e.g. Neon PostgreSQL or Turso) is required.
+    plan: starter
     region: oregon
     healthCheckPath: /api/health
     envVars:
