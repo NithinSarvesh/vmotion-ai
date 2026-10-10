@@ -80,17 +80,45 @@ class Settings(BaseSettings):
     S3_SECRET_ACCESS_KEY: Optional[str] = None
     S3_REGION: str = "us-east-1"
     
+    # Environment: 'development', 'test', 'production'
+    ENVIRONMENT: Literal["development", "test", "production"] = "development"
+    
     @model_validator(mode="after")
-    def sync_agent_tokens(self) -> "Settings":
+    def validate_production_and_sync_tokens(self) -> "Settings":
         """
-        Synchronize GATEWAY_AGENT_TOKEN and VBOX_AGENT_SECRET.
-        Ensures that if Render defines GATEWAY_AGENT_TOKEN dynamically,
-        VBOX_AGENT_SECRET matches it unless explicitly configured otherwise.
+        Validates security requirements in production and synchronizes gateway tokens.
+        In production (or Render environments), fails closed if insecure default secrets
+        remain configured or if debug mode is active.
         """
+        import os
+        is_prod = (
+            self.ENVIRONMENT == "production"
+            or os.getenv("RENDER") is not None
+            or os.getenv("ENVIRONMENT") == "production"
+        )
+
+        # Synchronize GATEWAY_AGENT_TOKEN and VBOX_AGENT_SECRET
         if self.GATEWAY_AGENT_TOKEN != "vmotion-vbox-secret" and self.VBOX_AGENT_SECRET == "vmotion-vbox-secret":
             self.VBOX_AGENT_SECRET = self.GATEWAY_AGENT_TOKEN
         elif self.VBOX_AGENT_SECRET != "vmotion-vbox-secret" and self.GATEWAY_AGENT_TOKEN == "vmotion-vbox-secret":
             self.GATEWAY_AGENT_TOKEN = self.VBOX_AGENT_SECRET
+
+        if is_prod:
+            if self.DEBUG:
+                raise ValueError("Production security violation: DEBUG mode must be disabled in production.")
+            if self.OPERATOR_API_KEY == "vmotion-operator-key-default":
+                raise ValueError("Production security violation: OPERATOR_API_KEY must not use default placeholder.")
+            if self.ENROLLMENT_SECRET == "vmotion-enroll-key":
+                raise ValueError("Production security violation: ENROLLMENT_SECRET must not use default placeholder.")
+            if self.GATEWAY_AGENT_TOKEN == "vmotion-vbox-secret":
+                raise ValueError("Production security violation: GATEWAY_AGENT_TOKEN must not use default placeholder.")
+            if self.VBOX_AGENT_SECRET == "vmotion-vbox-secret":
+                raise ValueError("Production security violation: VBOX_AGENT_SECRET must not use default placeholder.")
+            if self.PROVIDER_TYPE != "virtualbox":
+                raise ValueError("Production security violation: Deployed provider in production must be 'virtualbox'.")
+            if self.VBOX_MIGRATION_MODE != "cold_ova":
+                raise ValueError("Production security violation: Deployed VirtualBox provider must use 'cold_ova' migration mode.")
+
         return self
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")

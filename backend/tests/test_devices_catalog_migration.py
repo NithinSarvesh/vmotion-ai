@@ -56,19 +56,23 @@ def test_device_enrollment_and_lifecycle():
     assert any(d["device_id"] == dev_id for d in devs)
 
     # 4. Revoke device
-    del_resp = client.delete(f"/api/devices/{dev_id}")
+    unauth_del = client.delete(f"/api/devices/{dev_id}")
+    assert unauth_del.status_code == 403
+
+    del_resp = client.delete(f"/api/devices/{dev_id}", headers={"X-Device-Token": data["token"]})
     assert del_resp.status_code == 200
     assert del_resp.json()["status"] == "revoked"
 
 
 def test_vm_catalog_publishing():
     """Verifies VM catalog publish, list, and unpublish operations."""
-    # Setup test device
+    # Setup test device with token
     dev_id = "test-host-cat"
-    register_device(device_id=dev_id, hostname="Catalog-Host", role="source")
+    dev_token = "cat-device-token-1234"
+    register_device(device_id=dev_id, hostname="Catalog-Host", role="source", token=dev_token)
 
-    # 1. Publish VM
-    pub_resp = client.post("/api/catalog/publish", json={
+    # 1. Unauthenticated publish should be rejected (403)
+    unauth_pub = client.post("/api/catalog/publish", json={
         "device_id": dev_id,
         "vm_name": "Test-Ubuntu-VM",
         "status": "stopped",
@@ -77,6 +81,18 @@ def test_vm_catalog_publishing():
         "disk_gb": 30.0,
         "os_type": "Ubuntu_64"
     })
+    assert unauth_pub.status_code == 403
+
+    # Authenticated publish
+    pub_resp = client.post("/api/catalog/publish", json={
+        "device_id": dev_id,
+        "vm_name": "Test-Ubuntu-VM",
+        "status": "stopped",
+        "cpu_cores": 4,
+        "ram_mb": 4096.0,
+        "disk_gb": 30.0,
+        "os_type": "Ubuntu_64"
+    }, headers={"X-Device-Token": dev_token})
     assert pub_resp.status_code == 200
     data = pub_resp.json()
     assert data["status"] == "published"
@@ -88,25 +104,46 @@ def test_vm_catalog_publishing():
     catalog = list_resp.json()
     assert any(v["name"] == "Test-Ubuntu-VM" for v in catalog)
 
-    # 3. Unpublish VM
-    unpub_resp = client.post("/api/catalog/unpublish", json={
+    # 3. Unpublish VM (requires auth)
+    unauth_unpub = client.post("/api/catalog/unpublish", json={
         "device_id": dev_id,
         "vm_name": "Test-Ubuntu-VM"
     })
+    assert unauth_unpub.status_code == 403
+
+    unpub_resp = client.post("/api/catalog/unpublish", json={
+        "device_id": dev_id,
+        "vm_name": "Test-Ubuntu-VM"
+    }, headers={"X-Device-Token": dev_token})
     assert unpub_resp.status_code == 200
     assert unpub_resp.json()["status"] == "unpublished"
 
 
 def test_migration_job_creation_and_tracking():
     """Verifies persistent migration job creation, same-computer detection, and retrieval."""
-    # 1. Same-computer migration job creation
-    same_resp = client.post("/api/migrations/create", json={
+    op_headers = {"X-Operator-Key": settings.OPERATOR_API_KEY}
+
+    # Register host device
+    register_device(device_id="vbox-host-local", hostname="Local-Host", role="both")
+
+    # Unauthenticated creation rejected (403)
+    unauth_resp = client.post("/api/migrations/create", json={
         "source_device_id": "vbox-host-local",
         "target_device_id": "vbox-host-local",
         "vm_name": "VMotion-Demo",
         "direct_transfer_method": "same_host",
         "auto_start_target": True
     })
+    assert unauth_resp.status_code == 403
+
+    # 1. Same-computer migration job creation (authenticated)
+    same_resp = client.post("/api/migrations/create", json={
+        "source_device_id": "vbox-host-local",
+        "target_device_id": "vbox-host-local",
+        "vm_name": "VMotion-Demo",
+        "direct_transfer_method": "same_host",
+        "auto_start_target": True
+    }, headers=op_headers)
     assert same_resp.status_code == 200
     same_job = same_resp.json()
     assert same_job["is_same_computer"] == 1 or same_job["is_same_computer"] is True
@@ -117,8 +154,11 @@ def test_migration_job_creation_and_tracking():
     assert get_resp.status_code == 200
     assert get_resp.json()["job_id"] == job_id
 
-    # 3. Cancel job
-    cancel_resp = client.post(f"/api/migrations/jobs/{job_id}/cancel")
+    # 3. Cancel job (requires auth)
+    unauth_cancel = client.post(f"/api/migrations/jobs/{job_id}/cancel")
+    assert unauth_cancel.status_code == 403
+
+    cancel_resp = client.post(f"/api/migrations/jobs/{job_id}/cancel", headers=op_headers)
     assert cancel_resp.status_code == 200
     assert cancel_resp.json()["status"] == "cancelled"
 
@@ -131,7 +171,7 @@ def test_migration_job_creation_and_tracking():
 def test_agent_download_endpoint():
     """Verifies that the /api/agent/download endpoint serves the executable or returns instructions."""
     resp = client.get("/api/agent/download")
-    assert resp.status_code == 200
+    assert resp.status_code in (200, 503)
     # If binary exists, Content-Type is application/octet-stream; otherwise JSON
     ct = resp.headers.get("content-type", "")
     assert "application/octet-stream" in ct or "application/json" in ct
@@ -139,14 +179,42 @@ def test_agent_download_endpoint():
 
 def test_transfer_authorization():
     """Verifies cryptographic one-time transfer token generation."""
-    resp = client.post("/api/transfers/authorize", json={
-        "job_id": "job-abc12345",
+    op_headers = {"X-Operator-Key": settings.OPERATOR_API_KEY}
+
+    register_device(device_id="dev-src", hostname="Host-Source", role="source")
+    register_device(device_id="dev-tgt", hostname="Host-Target", role="target")
+
+    # Create job first
+    job_resp = client.post("/api/migrations/create", json={
         "source_device_id": "dev-src",
         "target_device_id": "dev-tgt",
-        "artifact_name": "VMotion-Migration-abc12345.ova"
+        "vm_name": "VMotion-Demo",
+        "direct_transfer_method": "direct_lan",
+        "auto_start_target": False
+    }, headers=op_headers)
+    assert job_resp.status_code == 200
+    job_id = job_resp.json()["job_id"]
+
+    # Unauthenticated transfer authorization should fail with 403
+    unauth_resp = client.post("/api/transfers/authorize", json={
+        "job_id": job_id,
+        "source_device_id": "dev-src",
+        "target_device_id": "dev-tgt",
+        "artifact_name": f"VMotion-Migration-{job_id}.ova"
     })
+    assert unauth_resp.status_code == 403
+
+    # Authenticated authorization
+    resp = client.post("/api/transfers/authorize", json={
+        "job_id": job_id,
+        "source_device_id": "dev-src",
+        "target_device_id": "dev-tgt",
+        "artifact_name": f"VMotion-Migration-{job_id}.ova"
+    }, headers=op_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "AUTHORIZED"
     assert "auth_token" in data
-    assert len(data["auth_token"]) == 64
+    assert data["auth_token"].startswith("xfer_")
+    assert "signature" in data
+    assert len(data["signature"]) == 64

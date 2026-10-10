@@ -916,6 +916,80 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
             "verified_at": time.time()
         }, None
 
+    elif cmd == "GET_VM_INVENTORY":
+        logger.info("[RPC] Enumerating authentic local VirtualBox VM inventory...")
+        rc_all, out_all, _ = run_vbox(["list", "vms"], timeout=5.0)
+        rc_run, out_run, _ = run_vbox(["list", "runningvms"], timeout=5.0)
+        running_names = set()
+        if rc_run == 0:
+            for line in out_run.splitlines():
+                if '"' in line:
+                    running_names.add(line.split('"')[1])
+
+        vms = []
+        if rc_all == 0:
+            for line in out_all.splitlines():
+                if '"' in line and "{" in line:
+                    name = line.split('"')[1]
+                    uuid_str = line[line.find("{") + 1:line.find("}")]
+                    rc_info, out_info, _ = run_vbox(["showvminfo", name, "--machinereadable"], timeout=5.0)
+                    info = parse_machine_readable_output(out_info) if rc_info == 0 else {}
+                    cpus = int(info.get("cpus", 2))
+                    memory_mb = float(info.get("memory", 2048.0))
+                    ostype = info.get("ostype", "other")
+                    vm_state = info.get("VMState", "running" if name in running_names else "poweroff")
+
+                    disk_size_gb = 20.0
+                    for k, v in info.items():
+                        if any(ctrl in k for ctrl in ["SATA", "SCSI", "IDE", "NVMe"]) and v.endswith((".vdi", ".vmdk", ".vhd")):
+                            if os.path.exists(v):
+                                try:
+                                    disk_size_gb = round(os.path.getsize(v) / (1024**3), 2)
+                                except Exception:
+                                    pass
+
+                    vms.append({
+                        "id": name,
+                        "name": name,
+                        "uuid": uuid_str,
+                        "status": "running" if name in running_names or vm_state.lower() == "running" else "stopped",
+                        "state": vm_state,
+                        "cpu_cores": cpus,
+                        "ram_mb": memory_mb,
+                        "disk_gb": disk_size_gb,
+                        "os_type": ostype
+                    })
+
+        return "SUCCESS", {
+            "vms": vms,
+            "total_count": len(vms),
+            "host_id": HOST_ID
+        }, None
+
+    elif cmd == "CHECK_DESTINATION_READINESS":
+        required_disk_gb = float(payload.get("required_disk_gb", 10.0))
+        staging_dir = payload.get("staging_dir", r"C:\VMotionStaging")
+        check_path = staging_dir if os.path.exists(staging_dir) else ("C:\\" if sys.platform == "win32" else "/")
+        free_gb = 100.0
+        try:
+            free_gb = round(shutil.disk_usage(check_path).free / (1024**3), 2)
+        except Exception:
+            pass
+
+        vbox_installed = bool(VBOX_PATH and os.path.exists(VBOX_PATH))
+        rc_ver, out_ver, _ = run_vbox(["--version"], timeout=4.0)
+        vbox_version = out_ver if rc_ver == 0 else "Unknown"
+
+        ok = vbox_installed and (free_gb >= required_disk_gb)
+        err = None if ok else f"Destination host has insufficient free disk space ({free_gb} GB free, required {required_disk_gb} GB)."
+        return ("SUCCESS" if ok else "FAILED"), {
+            "ready": ok,
+            "vbox_installed": vbox_installed,
+            "vbox_version": vbox_version,
+            "free_disk_gb": free_gb,
+            "required_disk_gb": required_disk_gb
+        }, err
+
     else:
         return "FAILED", {}, f"Unknown or unauthorized command '{command}'"
 
@@ -1005,12 +1079,17 @@ async def cloud_gateway_client_task():
 
         except Exception as e:
             err_str = str(e)
-            if "403" in err_str or "4001" in err_str or "unauthorized" in err_str.lower() or "forbidden" in err_str.lower():
+            if "4001" in err_str:
                 logger.error(
-                    f"[Gateway Client] AUTHENTICATION FAILED (HTTP 403 / Code 4001): "
+                    f"[Gateway Client] ENROLLMENT REVOKED (Close Code 4001): "
+                    f"This physical host was revoked by the control plane administrator. Halting agent reconnection."
+                )
+                break
+            elif "403" in err_str or "unauthorized" in err_str.lower() or "forbidden" in err_str.lower():
+                logger.error(
+                    f"[Gateway Client] AUTHENTICATION FAILED (HTTP 403 / Forbidden): "
                     f"The secret token provided to this agent was rejected by the cloud control plane. "
-                    f"Please verify that VMOTION_AGENT_SECRET / GATEWAY_AGENT_TOKEN matches the GATEWAY_AGENT_TOKEN "
-                    f"configured in your Render Dashboard (Environment tab). Retrying in {delay}s..."
+                    f"Please re-enroll the device using '--enroll <SECRET>'. Retrying in {delay}s..."
                 )
             else:
                 logger.warning(f"[Gateway Client] Gateway connection failed/interrupted: {e}. Retrying in {delay}s...")
@@ -1248,11 +1327,91 @@ def redact_secret(token: Optional[str]) -> str:
     return f"{token[:4]}***{token[-2:]}"
 
 
+def dpapi_protect(secret_str: str) -> Optional[str]:
+    """Encrypts plaintext string using Windows DPAPI (CryptProtectData)."""
+    if platform.system().lower() != "windows" or not secret_str:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        import base64
+
+        class DATA_BLOB(ctypes.Structure):
+            _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
+
+        CryptProtectData = ctypes.windll.crypt32.CryptProtectData
+        CryptProtectData.argtypes = [
+            ctypes.POINTER(DATA_BLOB),
+            wintypes.LPCWSTR,
+            ctypes.POINTER(DATA_BLOB),
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(DATA_BLOB)
+        ]
+        CryptProtectData.restype = wintypes.BOOL
+
+        raw_bytes = secret_str.encode("utf-8")
+        blob_in = DATA_BLOB(len(raw_bytes), ctypes.cast(ctypes.create_string_buffer(raw_bytes), ctypes.POINTER(ctypes.c_byte)))
+        blob_out = DATA_BLOB()
+
+        if CryptProtectData(ctypes.byref(blob_in), "VMotionAgentCredential", None, None, None, 0, ctypes.byref(blob_out)):
+            encrypted = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+            ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+            return base64.b64encode(encrypted).decode("ascii")
+    except Exception as e:
+        logger.debug(f"DPAPI protect error: {e}")
+    return None
+
+
+def dpapi_unprotect(b64_cipher: str) -> Optional[str]:
+    """Decrypts base64 DPAPI ciphertext using Windows DPAPI (CryptUnprotectData)."""
+    if platform.system().lower() != "windows" or not b64_cipher:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        import base64
+
+        class DATA_BLOB(ctypes.Structure):
+            _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
+
+        CryptUnprotectData = ctypes.windll.crypt32.CryptUnprotectData
+        CryptUnprotectData.argtypes = [
+            ctypes.POINTER(DATA_BLOB),
+            ctypes.POINTER(wintypes.LPWSTR),
+            ctypes.POINTER(DATA_BLOB),
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(DATA_BLOB)
+        ]
+        CryptUnprotectData.restype = wintypes.BOOL
+
+        raw_enc = base64.b64decode(b64_cipher)
+        blob_in = DATA_BLOB(len(raw_enc), ctypes.cast(ctypes.create_string_buffer(raw_enc), ctypes.POINTER(ctypes.c_byte)))
+        blob_out = DATA_BLOB()
+
+        if CryptUnprotectData(ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)):
+            decrypted = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+            ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+            return decrypted.decode("utf-8")
+    except Exception as e:
+        logger.debug(f"DPAPI unprotect error: {e}")
+    return None
+
+
 def load_config(config_file: str = "agent_config.json") -> dict:
     if os.path.exists(config_file):
         try:
             with open(config_file, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+            # If DPAPI-encrypted token is present on Windows, decrypt it
+            if "agent_secret_dpapi" in data:
+                dec = dpapi_unprotect(data["agent_secret_dpapi"])
+                if dec:
+                    data["agent_secret"] = dec
+            return data
         except Exception as e:
             logger.warning(f"Could not load config file '{config_file}': {e}")
     return {}
@@ -1260,9 +1419,37 @@ def load_config(config_file: str = "agent_config.json") -> dict:
 
 def save_config(data: dict, config_file: str = "agent_config.json"):
     try:
+        data_to_save = dict(data)
+        # Attempt DPAPI protection on Windows
+        if "agent_secret" in data_to_save and data_to_save["agent_secret"]:
+            dpapi_blob = dpapi_protect(data_to_save["agent_secret"])
+            if dpapi_blob:
+                data_to_save["agent_secret_dpapi"] = dpapi_blob
+                data_to_save.pop("agent_secret", None)
+
         with open(config_file, "w") as f:
-            json.dump(data, f, indent=2)
-        logger.info(f"Saved configuration to '{config_file}'.")
+            json.dump(data_to_save, f, indent=2)
+
+        # Set restrictive permissions (user only)
+        if platform.system().lower() == "windows":
+            try:
+                username = os.getenv("USERNAME", "")
+                if username:
+                    subprocess.run(
+                        ["icacls", config_file, "/inheritance:r", "/grant:r", f"{username}:F"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+            except Exception:
+                pass
+        else:
+            try:
+                os.chmod(config_file, 0o600)
+            except Exception:
+                pass
+
+        logger.info(f"Saved secure configuration to '{config_file}'.")
     except Exception as e:
         logger.warning(f"Could not save config file '{config_file}': {e}")
 

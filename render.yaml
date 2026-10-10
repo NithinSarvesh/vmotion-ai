@@ -9,18 +9,28 @@ services:
     envVars:
       - key: PORT
         value: 8000
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "false"
       - key: MODE
         value: live
       - key: PROVIDER_TYPE
         value: virtualbox
+      - key: VBOX_MIGRATION_MODE
+        value: cold_ova
       - key: SERVE_FRONTEND
         value: true
+      - key: ENROLLMENT_SECRET
+        generateValue: true
       - key: GATEWAY_AGENT_TOKEN
         generateValue: true
       - key: OPERATOR_API_KEY
         generateValue: true
       - key: AGENT_HEARTBEAT_TIMEOUT_SECONDS
         value: 15.0
+      - key: DATABASE_PATH
+        value: /var/data/vmotion.db
       - key: HOST_A_ID
         value: vbox-host-a
       - key: HOST_B_ID
@@ -31,3 +41,7 @@ services:
         value: DemoVM
       - key: PPO_MODEL_PATH
         value: models/ppo_v5_final.zip
+    disk:
+      name: vmotion-data
+      mountPath: /var/data
+      sizeGB: 1

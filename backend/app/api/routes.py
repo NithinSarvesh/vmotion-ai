@@ -9,7 +9,7 @@ import hashlib
 import uuid
 import time
 import asyncio
-from fastapi import APIRouter, HTTPException, Query, Header
+from fastapi import APIRouter, HTTPException, Query, Header, Depends
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Literal, Optional, Dict, Any
@@ -35,6 +35,8 @@ from app.config import settings
 from app.db.database import (
     register_device,
     get_device,
+    get_device_by_token,
+    sanitize_device,
     list_devices,
     revoke_device,
     publish_vm,
@@ -44,6 +46,8 @@ from app.db.database import (
     get_migration_job,
     update_migration_job,
     list_migration_jobs,
+    create_transfer_authorization,
+    verify_and_redeem_transfer_authorization,
 )
 
 router = APIRouter(prefix="/api")
@@ -520,6 +524,55 @@ async def get_gateway_agents():
 
 
 # -----------------------------------------------------------------------------
+# Caller Authentication & Identity Dependency
+# -----------------------------------------------------------------------------
+
+class CallerIdentity(BaseModel):
+    is_operator: bool = False
+    is_device: bool = False
+    device_id: Optional[str] = None
+    device_role: Optional[str] = None
+    owner_name: Optional[str] = None
+
+
+async def get_caller_identity(
+    x_operator_key: Optional[str] = Header(None),
+    x_device_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None)
+) -> CallerIdentity:
+    """
+    Resolves caller identity from X-Operator-Key, X-Device-Token, or Authorization Bearer header.
+    Operator keys confer administrative authority. Device tokens confer ownership of their device_id.
+    """
+    # 1. Operator Key Validation
+    op_candidate = x_operator_key
+    if not op_candidate and authorization and authorization.startswith("Bearer "):
+        token_part = authorization[7:].strip()
+        if settings.OPERATOR_API_KEY and token_part == settings.OPERATOR_API_KEY:
+            op_candidate = token_part
+
+    if settings.OPERATOR_API_KEY and op_candidate == settings.OPERATOR_API_KEY:
+        return CallerIdentity(is_operator=True)
+
+    # 2. Device Token Validation
+    dev_candidate = x_device_token
+    if not dev_candidate and authorization and authorization.startswith("Bearer "):
+        dev_candidate = authorization[7:].strip()
+
+    if dev_candidate:
+        dev = get_device_by_token(dev_candidate)
+        if dev:
+            return CallerIdentity(
+                is_device=True,
+                device_id=dev["device_id"],
+                device_role=dev.get("role", "both"),
+                owner_name=dev.get("owner_name")
+            )
+
+    return CallerIdentity()
+
+
+# -----------------------------------------------------------------------------
 # Device Enrollment Models & Routes
 # -----------------------------------------------------------------------------
 
@@ -560,21 +613,29 @@ async def enroll_device(req: DeviceEnrollRequest):
         details={"device_id": device_id, "hostname": req.hostname, "role": req.role}
     )
 
+    sanitized_dev = sanitize_device(device, is_operator=True)
     return {
         "status": "enrolled",
         "device_id": device_id,
         "token": token,
         "role": req.role,
         "hostname": req.hostname,
-        "device": device
+        "device": sanitized_dev
     }
 
 
 @router.get("/devices")
-async def get_devices(include_offline: bool = True):
-    """Lists registered devices, reflecting live gateway session status."""
+async def get_devices(
+    include_offline: bool = True,
+    caller: CallerIdentity = Depends(get_caller_identity)
+):
+    """
+    Lists registered devices, reflecting live gateway session status.
+    Masks network IPs and strips credentials for unauthenticated callers.
+    """
     from app.gateway.agent_gateway import agent_gateway
     devs = list_devices(include_revoked=False)
+    sanitized = []
     for d in devs:
         did = d["device_id"]
         sess = agent_gateway.get_session(did)
@@ -589,14 +650,25 @@ async def get_devices(include_offline: bool = True):
         else:
             d["status"] = "offline"
 
+        sanitized.append(sanitize_device(d, is_operator=caller.is_operator))
+
     if not include_offline:
-        devs = [d for d in devs if d["status"] == "online"]
-    return devs
+        sanitized = [d for d in sanitized if d["status"] == "online"]
+    return sanitized
 
 
 @router.delete("/devices/{device_id}")
-async def delete_device(device_id: str):
+async def delete_device(
+    device_id: str,
+    caller: CallerIdentity = Depends(get_caller_identity)
+):
     """Revokes a device's enrollment and terminates any active agent session."""
+    if not caller.is_operator and not (caller.is_device and caller.device_id == device_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Revoking a device requires Operator privileges or the device's own token."
+        )
+
     from app.gateway.agent_gateway import agent_gateway
     device = get_device(device_id)
     if not device:
@@ -613,7 +685,7 @@ async def delete_device(device_id: str):
 
     audit_logger.log_event(
         event_type="DEVICE_REVOKED",
-        message=f"Device '{device_id}' revoked by operator.",
+        message=f"Device '{device_id}' revoked.",
         details={"device_id": device_id}
     )
     return {"status": "revoked", "device_id": device_id}
@@ -655,17 +727,43 @@ async def get_published_vms(device_id: Optional[str] = None):
 
 
 @router.post("/catalog/publish")
-async def publish_vm_endpoint(req: VMPublishRequest):
-    """Publishes a host VM to the shared migration catalog."""
+async def publish_vm_endpoint(
+    req: VMPublishRequest,
+    caller: CallerIdentity = Depends(get_caller_identity)
+):
+    """Publishes a host VM to the shared migration catalog. Validates caller ownership."""
+    if not caller.is_operator and not (caller.is_device and caller.device_id == req.device_id):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Forbidden: You are not authorized to publish virtual machines for device '{req.device_id}'."
+        )
+
+    # Authentic agent verification: inspect live agent telemetry for this device if available
+    from app.gateway.agent_gateway import agent_gateway
+    sess = agent_gateway.get_session(req.device_id)
+    real_status = req.status or "stopped"
+    real_cores = req.cpu_cores or 2
+    real_ram = req.ram_mb or 2048.0
+    real_disk = req.disk_gb or 20.0
+    real_os = req.os_type or "other"
+
+    if sess and sess.latest_telemetry and "vms" in sess.latest_telemetry:
+        vms = sess.latest_telemetry.get("vms", [])
+        found_vm = next((v for v in vms if v.get("name") == req.vm_name or v.get("id") == req.vm_name), None)
+        if found_vm:
+            real_status = found_vm.get("status", real_status)
+            real_cores = found_vm.get("cpus", real_cores)
+            real_ram = found_vm.get("memory_mb", real_ram)
+
     vm = publish_vm(
         vm_id=req.vm_name,
         device_id=req.device_id,
         name=req.vm_name,
-        status=req.status or "stopped",
-        cpu_cores=req.cpu_cores or 2,
-        ram_mb=req.ram_mb or 2048.0,
-        disk_gb=req.disk_gb or 20.0,
-        os_type=req.os_type or "other"
+        status=real_status,
+        cpu_cores=real_cores,
+        ram_mb=real_ram,
+        disk_gb=real_disk,
+        os_type=real_os
     )
     audit_logger.log_event(
         event_type="VM_PUBLISHED",
@@ -677,8 +775,17 @@ async def publish_vm_endpoint(req: VMPublishRequest):
 
 
 @router.post("/catalog/unpublish")
-async def unpublish_vm_endpoint(req: VMUnpublishRequest):
-    """Unpublishes a VM from the catalog."""
+async def unpublish_vm_endpoint(
+    req: VMUnpublishRequest,
+    caller: CallerIdentity = Depends(get_caller_identity)
+):
+    """Unpublishes a VM from the catalog. Validates caller ownership."""
+    if not caller.is_operator and not (caller.is_device and caller.device_id == req.device_id):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Forbidden: You are not authorized to unpublish virtual machines for device '{req.device_id}'."
+        )
+
     success = unpublish_vm(vm_id=req.vm_name, device_id=req.device_id)
     if not success:
         raise HTTPException(status_code=404, detail="VM not found in catalog")
@@ -705,8 +812,38 @@ class MigrationJobCreateRequest(BaseModel):
 
 
 @router.post("/migrations/create")
-async def create_migration_job_endpoint(req: MigrationJobCreateRequest):
-    """Creates a new cold migration job and triggers execution."""
+async def create_migration_job_endpoint(
+    req: MigrationJobCreateRequest,
+    caller: CallerIdentity = Depends(get_caller_identity)
+):
+    """Creates a new cold migration job and triggers execution. Validates caller authorization and device readiness."""
+    # Check caller authority: Operator OR source device
+    if not caller.is_operator and not (caller.is_device and caller.device_id == req.source_device_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Initiating a migration requires Operator authentication or source device token."
+        )
+
+    # Validate source device
+    src_dev = get_device(req.source_device_id)
+    if not src_dev:
+        raise HTTPException(status_code=404, detail=f"Source device '{req.source_device_id}' is not enrolled.")
+    if src_dev.get("is_revoked"):
+        raise HTTPException(status_code=403, detail=f"Source device '{req.source_device_id}' has been revoked.")
+
+    # Validate target device
+    tgt_dev = get_device(req.target_device_id)
+    if not tgt_dev:
+        raise HTTPException(status_code=404, detail=f"Target device '{req.target_device_id}' is not enrolled.")
+    if tgt_dev.get("is_revoked"):
+        raise HTTPException(status_code=403, detail=f"Target device '{req.target_device_id}' has been revoked.")
+
+    # Role constraints
+    if src_dev.get("role") not in ("source", "both"):
+        raise HTTPException(status_code=400, detail=f"Device '{req.source_device_id}' is registered as target-only.")
+    if tgt_dev.get("role") not in ("target", "both"):
+        raise HTTPException(status_code=400, detail=f"Device '{req.target_device_id}' is registered as source-only.")
+
     is_same = (req.source_device_id == req.target_device_id) or (req.direct_transfer_method == "same_host")
     job_id = f"job-{uuid.uuid4().hex[:8]}"
 
@@ -774,11 +911,21 @@ async def get_job_endpoint(job_id: str):
 
 
 @router.post("/migrations/jobs/{job_id}/cancel")
-async def cancel_job_endpoint(job_id: str):
-    """Cancels a pending or queued migration job."""
+async def cancel_job_endpoint(
+    job_id: str,
+    caller: CallerIdentity = Depends(get_caller_identity)
+):
+    """Cancels a pending or queued migration job. Validates caller authorization."""
     job = get_migration_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Migration job '{job_id}' not found")
+
+    if not caller.is_operator and not (caller.is_device and caller.device_id in (job["source_device_id"], job["target_device_id"])):
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Cancelling a migration job requires Operator privileges or participating device tokens."
+        )
+
     if job["state"] in ("COMPLETED", "VERIFIED"):
         raise HTTPException(status_code=400, detail="Cannot cancel an already completed job")
 
@@ -800,7 +947,7 @@ async def cancel_job_endpoint(job_id: str):
 
 @router.get("/agent/download")
 async def download_agent():
-    """Serves the standalone Windows Agent executable or packaging metadata."""
+    """Serves the standalone Windows Agent executable or safe unavailable status."""
     dist_path = os.path.join(settings.AGENT_DIST_DIR, settings.AGENT_BINARY_NAME)
     if os.path.exists(dist_path):
         return FileResponse(
@@ -810,18 +957,17 @@ async def download_agent():
             headers={"Content-Disposition": f'attachment; filename="{settings.AGENT_BINARY_NAME}"'}
         )
     return JSONResponse(
-        status_code=200,
+        status_code=503,
         content={
             "available": False,
-            "message": "Standalone agent executable is not yet compiled on this server.",
-            "build_instructions": "Run 'python scripts/build_agent.py' to generate 'dist/vmotion-agent.exe'.",
-            "enrollment_secret": settings.ENROLLMENT_SECRET
+            "status": "unavailable",
+            "message": "Standalone agent executable is currently unavailable on this server instance."
         }
     )
 
 
 # -----------------------------------------------------------------------------
-# Transfer Authorization Endpoint
+# Cryptographic Transfer Authorization Endpoints
 # -----------------------------------------------------------------------------
 
 class TransferAuthorizeRequest(BaseModel):
@@ -831,16 +977,74 @@ class TransferAuthorizeRequest(BaseModel):
     artifact_name: str
 
 
+class TransferRedeemRequest(BaseModel):
+    job_id: str
+    auth_token: str
+    device_id: Optional[str] = None
+
+
 @router.post("/transfers/authorize")
-async def authorize_transfer(req: TransferAuthorizeRequest):
-    """Issues a cryptographically signed one-time token for direct artifact transfer."""
-    token_str = f"{req.job_id}:{req.source_device_id}:{req.target_device_id}:{req.artifact_name}:{settings.GATEWAY_AGENT_TOKEN}"
-    auth_token = hashlib.sha256(token_str.encode("utf-8")).hexdigest()
+async def authorize_transfer(
+    req: TransferAuthorizeRequest,
+    caller: CallerIdentity = Depends(get_caller_identity)
+):
+    """Issues a cryptographically signed, expiring, single-use token for direct artifact transfer."""
+    job = get_migration_job(req.job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Migration job '{req.job_id}' not found")
+
+    if not caller.is_operator and not (caller.is_device and caller.device_id in (req.source_device_id, req.target_device_id)):
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Transfer authorization requires Operator credentials or authorized device participation."
+        )
+
+    if job["state"] in ("FAILED", "CANCELLED"):
+        raise HTTPException(status_code=400, detail="Cannot authorize transfer for failed or cancelled job.")
+
+    auth_record = create_transfer_authorization(
+        job_id=req.job_id,
+        source_device_id=req.source_device_id,
+        target_device_id=req.target_device_id,
+        artifact_name=req.artifact_name
+    )
+
     return {
         "status": "AUTHORIZED",
         "job_id": req.job_id,
         "artifact_name": req.artifact_name,
-        "auth_token": auth_token,
-        "expires_in_seconds": 3600
+        "auth_token": auth_record["token_id"],
+        "signature": auth_record["hmac_signature"],
+        "expires_in_seconds": auth_record["expires_in_seconds"],
+        "expires_at": auth_record["expires_at"]
     }
+
+
+@router.post("/transfers/redeem")
+async def redeem_transfer(
+    req: TransferRedeemRequest,
+    caller: CallerIdentity = Depends(get_caller_identity)
+):
+    """Redeems a single-use transfer authorization token upon artifact transfer initiation."""
+    if not caller.is_operator and not caller.is_device:
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Redeeming transfer authorization requires enrolled device or Operator credentials."
+        )
+
+    eff_device_id = caller.device_id or (req.device_id if caller.is_operator else None)
+    try:
+        record = verify_and_redeem_transfer_authorization(
+            token_id=req.auth_token,
+            job_id=req.job_id,
+            caller_device_id=eff_device_id
+        )
+        return {
+            "status": "REDEEMED",
+            "job_id": req.job_id,
+            "token_id": req.auth_token,
+            "redeemed_at": record["redeemed_at"]
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
 

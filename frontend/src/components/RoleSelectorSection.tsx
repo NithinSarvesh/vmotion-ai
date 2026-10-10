@@ -35,6 +35,11 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
 
+  // Authentication & Enrollment Secrets
+  const [operatorKey, setOperatorKey] = useState<string>(() => localStorage.getItem('vmotion_operator_key') || '');
+  const [enrollSecret, setEnrollSecret] = useState<string>('');
+  const effectiveSecret = enrollSecret.trim() || '<ENROLLMENT_SECRET>';
+
   // Forms
   const [publishVmName, setPublishVmName] = useState<string>('VMotion-Demo');
   const [publishDeviceId, setPublishDeviceId] = useState<string>('');
@@ -48,11 +53,17 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
 
   const serverUrl = window.location.origin;
 
+  const handleOperatorKeyChange = (key: string) => {
+    setOperatorKey(key);
+    localStorage.setItem('vmotion_operator_key', key);
+  };
+
   const fetchData = async () => {
     try {
       setIsLoading(true);
+      const opHeaders: Record<string, string> = operatorKey ? { 'X-Operator-Key': operatorKey } : {};
       const [devRes, vmRes, jobRes] = await Promise.all([
-        fetch('/api/devices'),
+        fetch('/api/devices', { headers: opHeaders }),
         fetch('/api/catalog/vms'),
         fetch('/api/migrations/jobs')
       ]);
@@ -120,7 +131,10 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
     try {
       const res = await fetch('/api/catalog/publish', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(operatorKey ? { 'X-Operator-Key': operatorKey } : {})
+        },
         body: JSON.stringify({
           device_id: publishDeviceId,
           vm_name: publishVmName,
@@ -147,7 +161,10 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
     try {
       const res = await fetch('/api/catalog/unpublish', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(operatorKey ? { 'X-Operator-Key': operatorKey } : {})
+        },
         body: JSON.stringify({ device_id: deviceId, vm_name: vmName })
       });
       if (res.ok) {
@@ -162,7 +179,10 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
   const handleRevokeDevice = async (deviceId: string) => {
     if (!window.confirm(`Revoke device '${deviceId}'? The agent will be disconnected.`)) return;
     try {
-      const res = await fetch(`/api/devices/${deviceId}`, { method: 'DELETE' });
+      const res = await fetch(`/api/devices/${deviceId}`, {
+        method: 'DELETE',
+        headers: operatorKey ? { 'X-Operator-Key': operatorKey } : {}
+      });
       if (res.ok) {
         setStatusMessage({ type: 'info', text: `Device '${deviceId}' revoked.` });
         fetchData();
@@ -201,7 +221,10 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
     try {
       const res = await fetch('/api/migrations/create', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(operatorKey ? { 'X-Operator-Key': operatorKey } : {})
+        },
         body: JSON.stringify({
           source_device_id: srcDevice,
           target_device_id: tgtDevice,
@@ -269,6 +292,36 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
             <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
             <span>REFRESH</span>
           </button>
+        </div>
+      </div>
+
+      {/* Control Plane Security & Credentials Panel */}
+      <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50/30 p-4">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="flex-1 w-full sm:w-auto">
+            <label className="block text-[11px] font-mono font-semibold text-[#334155] mb-1">
+              OPERATOR ADMIN KEY (X-Operator-Key)
+            </label>
+            <input
+              type="password"
+              value={operatorKey}
+              onChange={(e) => handleOperatorKeyChange(e.target.value)}
+              placeholder="Enter operator key for administrative actions"
+              className="w-full rounded-lg border border-[#CBD5E1] bg-white px-3 py-1.5 text-xs font-mono text-[#0F172A] focus:border-blue-600 focus:outline-hidden"
+            />
+          </div>
+          <div className="flex-1 w-full sm:w-auto">
+            <label className="block text-[11px] font-mono font-semibold text-[#334155] mb-1">
+              ENROLLMENT SECRET (To populate agent commands)
+            </label>
+            <input
+              type="password"
+              value={enrollSecret}
+              onChange={(e) => setEnrollSecret(e.target.value)}
+              placeholder="Optional: Enter secret to fill copy snippets"
+              className="w-full rounded-lg border border-[#CBD5E1] bg-white px-3 py-1.5 text-xs font-mono text-[#0F172A] focus:border-blue-600 focus:outline-hidden"
+            />
+          </div>
         </div>
       </div>
 
@@ -362,9 +415,9 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
                 Run this command in PowerShell from the project root or folder containing <code className="bg-white px-1 border rounded">vmotion-agent.exe</code>:
               </p>
               <div className="relative rounded-lg bg-[#0F172A] p-3 font-mono text-xs text-emerald-400 overflow-x-auto">
-                <code>.\dist\vmotion-agent.exe --server {serverUrl} --enroll vmotion-enroll-key --role both</code>
+                <code>.\dist\vmotion-agent.exe --server {serverUrl} --enroll {effectiveSecret} --role both</code>
                 <button
-                  onClick={() => handleCopy(`.\\dist\\vmotion-agent.exe --server ${serverUrl} --enroll vmotion-enroll-key --role both`, 'same-cmd')}
+                  onClick={() => handleCopy(`.\\dist\\vmotion-agent.exe --server ${serverUrl} --enroll ${effectiveSecret} --role both`, 'same-cmd')}
                   className="absolute right-2 top-2 rounded bg-white/10 p-1.5 text-white hover:bg-white/20 transition-colors"
                   title="Copy command"
                 >
@@ -373,7 +426,7 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
               </div>
               <div className="text-[11px] text-[#64748B] flex items-center space-x-1.5">
                 <Info className="h-3.5 w-3.5 text-blue-500 shrink-0" />
-                <span>Or run with python: <code className="bg-white px-1 border rounded text-[#0F172A]">python vmotion-agent/agent.py --server {serverUrl} --enroll vmotion-enroll-key</code></span>
+                <span>Or run with python: <code className="bg-white px-1 border rounded text-[#0F172A]">python vmotion-agent/agent.py --server {serverUrl} --enroll {effectiveSecret}</code></span>
               </div>
             </div>
 
@@ -423,9 +476,9 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
                 Run the agent executable with <code className="bg-white px-1 border rounded">--role source</code> to enroll your computer:
               </p>
               <div className="relative rounded-lg bg-[#0F172A] p-3 font-mono text-xs text-blue-400 overflow-x-auto">
-                <code>.\vmotion-agent.exe --server {serverUrl} --enroll vmotion-enroll-key --role source</code>
+                <code>.\vmotion-agent.exe --server {serverUrl} --enroll {effectiveSecret} --role source</code>
                 <button
-                  onClick={() => handleCopy(`.\\vmotion-agent.exe --server ${serverUrl} --enroll vmotion-enroll-key --role source`, 'src-cmd')}
+                  onClick={() => handleCopy(`.\\vmotion-agent.exe --server ${serverUrl} --enroll ${effectiveSecret} --role source`, 'src-cmd')}
                   className="absolute right-2 top-2 rounded bg-white/10 p-1.5 text-white hover:bg-white/20 transition-colors"
                 >
                   {copiedCmd === 'src-cmd' ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
@@ -488,9 +541,9 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
                 On the destination laptop, run the agent with <code className="bg-white px-1 border rounded">--role target</code>:
               </p>
               <div className="relative rounded-lg bg-[#0F172A] p-3 font-mono text-xs text-indigo-400 overflow-x-auto">
-                <code>.\vmotion-agent.exe --server {serverUrl} --enroll vmotion-enroll-key --role target</code>
+                <code>.\vmotion-agent.exe --server {serverUrl} --enroll {effectiveSecret} --role target</code>
                 <button
-                  onClick={() => handleCopy(`.\\vmotion-agent.exe --server ${serverUrl} --enroll vmotion-enroll-key --role target`, 'tgt-cmd')}
+                  onClick={() => handleCopy(`.\\vmotion-agent.exe --server ${serverUrl} --enroll ${effectiveSecret} --role target`, 'tgt-cmd')}
                   className="absolute right-2 top-2 rounded bg-white/10 p-1.5 text-white hover:bg-white/20 transition-colors"
                 >
                   {copiedCmd === 'tgt-cmd' ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}

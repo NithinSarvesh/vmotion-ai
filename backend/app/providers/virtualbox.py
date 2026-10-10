@@ -30,7 +30,14 @@ from app.providers.base import (
 from app.config import settings
 from app.audit.logger import audit_logger
 from app.gateway.agent_gateway import agent_gateway, AgentOfflineError, AgentCommandTimeoutError
-from app.db.database import update_migration_job, list_published_vms, list_devices
+from app.db.database import (
+    update_migration_job,
+    create_migration_job,
+    get_migration_job,
+    list_published_vms,
+    list_devices,
+    create_transfer_authorization
+)
 
 logger = logging.getLogger("vmotion.provider.virtualbox")
 
@@ -760,6 +767,20 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
         imported_vm_name = f"VMotion-Migrated-{job_id}"
         task.imported_vm_name = imported_vm_name
 
+        existing_job = get_migration_job(job_id)
+        if not existing_job:
+            try:
+                create_migration_job(
+                    job_id=job_id,
+                    plan_id=plan.plan_id,
+                    vm_id=plan.vm_id,
+                    source_device_id=source_agent_id,
+                    target_device_id=target_agent_id,
+                    is_same_computer=int(is_same_computer)
+                )
+            except Exception as e:
+                logger.debug(f"Migration job '{job_id}' creation note: {e}")
+
         try:
             # -------------------------------------------------------------
             # STAGE 1: PREFLIGHT
@@ -962,6 +983,13 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 staging_dir = settings.VBOX_STAGING_PATH
                 staged_path = os.path.join(staging_dir, ova_filename)
 
+                xfer_auth = create_transfer_authorization(
+                    job_id=job_id,
+                    source_device_id=source_agent_id,
+                    target_device_id=target_agent_id,
+                    artifact_name=ova_filename
+                )
+
                 resp_trans = await agent_gateway.dispatch_command(
                     agent_id=target_agent_id,
                     command="TRANSFER_PACKAGE",
@@ -970,7 +998,9 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                         "job_id": job_id,
                         "staging_dir": staging_dir,
                         "expected_sha256": task.sha256,
-                        "file_size_bytes": task.file_size_bytes
+                        "file_size_bytes": task.file_size_bytes,
+                        "transfer_token": xfer_auth["token_id"],
+                        "transfer_signature": xfer_auth["hmac_signature"]
                     },
                     timeout_seconds=600.0
                 )

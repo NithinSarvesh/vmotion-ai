@@ -11,6 +11,8 @@ import time
 import json
 import sqlite3
 import hashlib
+import hmac
+import secrets
 import logging
 from typing import Optional, Dict, Any, List
 
@@ -138,6 +140,22 @@ def init_db(db_path: Optional[str] = None):
         );
         """)
 
+        # 5. Transfer Authorizations Table (Scoped, Cryptographically Signed, Single-Use)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS transfer_authorizations (
+            token_id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            source_device_id TEXT NOT NULL,
+            target_device_id TEXT NOT NULL,
+            artifact_name TEXT NOT NULL,
+            hmac_signature TEXT NOT NULL,
+            issued_at REAL NOT NULL,
+            expires_at REAL NOT NULL,
+            is_redeemed INTEGER NOT NULL DEFAULT 0,
+            redeemed_at REAL
+        );
+        """)
+
         conn.commit()
     logger.info("[DB] Database initialization complete.")
 
@@ -201,6 +219,41 @@ def get_device(device_id: str, db_path: Optional[str] = None) -> Optional[Dict[s
         cursor.execute("SELECT * FROM devices WHERE device_id = ?", (device_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
+
+
+def get_device_by_token(token: str, db_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Looks up an active, non-revoked device matching the SHA-256 hash of the provided token."""
+    if not token or not token.strip():
+        return None
+    token_h = hash_token(token)
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM devices WHERE token_hash = ? AND is_revoked = 0", (token_h,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d.pop("token_hash", None)
+        return d
+
+
+def sanitize_device(device: Dict[str, Any], is_operator: bool = False) -> Dict[str, Any]:
+    """
+    Sanitizes device records before returning them across public APIs.
+    Always removes token_hash. Masks sensitive network IPs unless the caller is an authenticated Operator.
+    """
+    out = dict(device)
+    out.pop("token_hash", None)
+    if not is_operator:
+        lan = out.get("lan_ip")
+        if lan and "." in lan:
+            parts = lan.split(".")
+            out["lan_ip"] = f"{parts[0]}.{parts[1]}.{parts[2]}.***" if len(parts) == 4 else "***"
+        ts = out.get("tailscale_ip")
+        if ts and "." in ts:
+            parts = ts.split(".")
+            out["tailscale_ip"] = f"{parts[0]}.{parts[1]}.***.***" if len(parts) == 4 else "***"
+    return out
 
 
 def list_devices(include_revoked: bool = False, db_path: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -449,3 +502,123 @@ def list_audit_events(limit: int = 50, db_path: Optional[str] = None) -> List[Di
                 d["details"] = {}
             result.append(d)
         return result
+
+
+# -----------------------------------------------------------------------------
+# Cryptographic Transfer Authorization Operations
+# -----------------------------------------------------------------------------
+
+def compute_transfer_hmac(
+    token_id: str,
+    job_id: str,
+    source_device_id: str,
+    target_device_id: str,
+    artifact_name: str,
+    expires_at: float,
+    secret_key: Optional[str] = None
+) -> str:
+    """Computes an HMAC-SHA256 signature binding the token to the specific migration endpoints and artifact."""
+    from app.config import settings
+    key = (secret_key or settings.GATEWAY_AGENT_TOKEN).encode("utf-8")
+    payload = f"{token_id}:{job_id}:{source_device_id}:{target_device_id}:{artifact_name}:{expires_at}"
+    return hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def create_transfer_authorization(
+    job_id: str,
+    source_device_id: str,
+    target_device_id: str,
+    artifact_name: str,
+    expires_in_seconds: float = 3600.0,
+    db_path: Optional[str] = None
+) -> Dict[str, Any]:
+    """Issues a cryptographically signed, expiring, single-use transfer token scoped to a migration job."""
+    now = time.time()
+    expires_at = now + expires_in_seconds
+    token_id = f"xfer_{secrets.token_hex(16)}"
+    sig = compute_transfer_hmac(
+        token_id=token_id,
+        job_id=job_id,
+        source_device_id=source_device_id,
+        target_device_id=target_device_id,
+        artifact_name=artifact_name,
+        expires_at=expires_at
+    )
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+        INSERT INTO transfer_authorizations (
+            token_id, job_id, source_device_id, target_device_id,
+            artifact_name, hmac_signature, issued_at, expires_at, is_redeemed
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0);
+        """, (token_id, job_id, source_device_id, target_device_id, artifact_name, sig, now, expires_at))
+        conn.commit()
+
+    return {
+        "token_id": token_id,
+        "job_id": job_id,
+        "source_device_id": source_device_id,
+        "target_device_id": target_device_id,
+        "artifact_name": artifact_name,
+        "hmac_signature": sig,
+        "issued_at": now,
+        "expires_at": expires_at,
+        "expires_in_seconds": expires_in_seconds
+    }
+
+
+def verify_and_redeem_transfer_authorization(
+    token_id: str,
+    job_id: str,
+    caller_device_id: Optional[str] = None,
+    db_path: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Verifies HMAC signature, checks expiration, and atomically redeems token (strictly single-use).
+    Raises ValueError on invalid signature, expired, or already redeemed token.
+    """
+    now = time.time()
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM transfer_authorizations WHERE token_id = ?", (token_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise ValueError(f"Transfer authorization token '{token_id}' not found.")
+
+        record = dict(row)
+        if record["job_id"] != job_id:
+            raise ValueError(f"Transfer token is not scoped to migration job '{job_id}'.")
+
+        if caller_device_id and caller_device_id not in (record["source_device_id"], record["target_device_id"]):
+            raise ValueError(f"Device '{caller_device_id}' is not authorized to redeem this transfer token.")
+
+        if now > record["expires_at"]:
+            raise ValueError("Transfer authorization token has expired.")
+
+        if record["is_redeemed"]:
+            raise ValueError("Transfer authorization token has already been redeemed (single-use).")
+
+        expected_sig = compute_transfer_hmac(
+            token_id=record["token_id"],
+            job_id=record["job_id"],
+            source_device_id=record["source_device_id"],
+            target_device_id=record["target_device_id"],
+            artifact_name=record["artifact_name"],
+            expires_at=record["expires_at"]
+        )
+        if not hmac.compare_digest(record["hmac_signature"], expected_sig):
+            raise ValueError("Transfer token HMAC signature validation failed.")
+
+        cursor.execute("""
+        UPDATE transfer_authorizations
+        SET is_redeemed = 1, redeemed_at = ?
+        WHERE token_id = ? AND is_redeemed = 0;
+        """, (now, token_id))
+        conn.commit()
+
+        if cursor.rowcount == 0:
+            raise ValueError("Concurrent redemption detected; token already redeemed.")
+
+        record["is_redeemed"] = 1
+        record["redeemed_at"] = now
+        return record

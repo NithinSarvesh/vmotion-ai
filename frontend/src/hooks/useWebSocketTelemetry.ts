@@ -198,7 +198,7 @@ export function useWebSocketTelemetry() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Operator-Key': 'vmotion-operator-key-default'
+          'X-Operator-Key': localStorage.getItem('vmotion_operator_key') || ''
         },
         body: JSON.stringify({
           provider_type: providerType,
