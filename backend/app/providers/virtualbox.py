@@ -1080,7 +1080,11 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 raise RuntimeError("VBoxManage appliance import returned empty response data.")
 
             task.import_duration_seconds = resp_imp.data.get("import_duration_seconds", 0.0)
-            update_migration_job(job_id=job_id, import_duration_seconds=task.import_duration_seconds)
+            update_migration_job(
+                job_id=job_id,
+                import_duration_seconds=task.import_duration_seconds,
+                imported_vm_name=imported_vm_name,
+            )
 
             # -------------------------------------------------------------
             # STAGE 7: DESTINATION STARTED
@@ -1178,6 +1182,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 stage="SUCCESS",
                 progress_percent=100.0,
                 completed_at=now_done,
+                imported_vm_name=imported_vm_name,
                 file_size_bytes=task.file_size_bytes,
                 file_size_mb=task.file_size_mb,
                 sha256=task.sha256,
@@ -1206,6 +1211,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 state="FAILED",
                 stage=task.stage,
                 progress_percent=task.progress_percent,
+                imported_vm_name=task.imported_vm_name,
                 error_message=str(e)
             )
 

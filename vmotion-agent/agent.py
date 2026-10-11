@@ -312,6 +312,125 @@ def sample_host_telemetry() -> Dict[str, Any]:
     }
 
 
+def prepare_vm_network_for_destination(vm_name: str) -> Tuple[bool, List[str], Optional[str]]:
+    """Reconcile bridged NICs with interfaces available on this destination host.
+
+    OVA appliances can retain the source host's bridge adapter name. Before booting
+    an imported VM, keep valid active bridges, remap invalid bridges to an active
+    destination interface, and fall back to NAT only when bridging is unavailable.
+    This changes only bridged adapters; existing NAT, host-only, and internal NICs
+    are left untouched.
+    """
+    rc_info, out_info, err_info = run_vbox(
+        ["showvminfo", vm_name, "--machinereadable"], timeout=10.0
+    )
+    if rc_info != 0:
+        return False, [], (
+            f"Could not inspect destination VM '{vm_name}' network configuration: "
+            f"{err_info or out_info or 'VBoxManage showvminfo failed'}"
+        )
+
+    vm_info = parse_machine_readable_output(out_info)
+    bridged_slots = [
+        slot for slot in range(1, 9)
+        if vm_info.get(f"nic{slot}", "").strip().lower() == "bridged"
+    ]
+    if not bridged_slots:
+        return True, ["No bridged NICs need destination-host remapping."], None
+
+    rc_bridges, bridge_output, bridge_error = run_vbox(
+        ["list", "bridgedifs"], timeout=10.0
+    )
+    available_interfaces: List[Dict[str, str]] = []
+    if rc_bridges == 0:
+        current: Optional[Dict[str, str]] = None
+        for line in bridge_output.splitlines():
+            if line.startswith("Name:"):
+                if current:
+                    available_interfaces.append(current)
+                current = {"name": line.split(":", 1)[1].strip(), "status": ""}
+            elif current and line.startswith("Status:"):
+                current["status"] = line.split(":", 1)[1].strip()
+        if current:
+            available_interfaces.append(current)
+
+    active_interfaces = [
+        item for item in available_interfaces
+        if item.get("name") and item.get("status", "").strip().lower() == "up"
+    ]
+    adjustments: List[str] = []
+
+    for slot in bridged_slots:
+        adapter_key = f"bridgeadapter{slot}"
+        configured_name = vm_info.get(adapter_key, "").strip()
+        valid_current = next(
+            (item for item in active_interfaces
+             if item["name"].casefold() == configured_name.casefold()),
+            None,
+        )
+        if valid_current:
+            adjustments.append(
+                f"NIC {slot}: keeping active bridge '{valid_current['name']}'."
+            )
+            continue
+
+        remapped = False
+        failures: List[str] = []
+        for interface in active_interfaces:
+            adapter_name = interface["name"]
+            rc_set, stdout_set, stderr_set = run_vbox(
+                [
+                    "modifyvm", vm_name,
+                    f"--nic{slot}", "bridged",
+                    f"--bridgeadapter{slot}", adapter_name,
+                ],
+                timeout=20.0,
+            )
+            if rc_set == 0:
+                adjustments.append(
+                    f"NIC {slot}: remapped unavailable bridge "
+                    f"'{configured_name or '<unset>'}' to '{adapter_name}'."
+                )
+                logger.info(
+                    "[RPC] Destination VM '%s' NIC %s remapped from bridge '%s' to active interface '%s'.",
+                    vm_name, slot, configured_name or "<unset>", adapter_name,
+                )
+                remapped = True
+                break
+            failures.append(stderr_set or stdout_set or f"could not bind '{adapter_name}'")
+
+        if remapped:
+            continue
+
+        # NAT is a portable fallback when the target has no usable bridge
+        # or VBoxManage cannot attach any active bridge interface.
+        rc_nat, stdout_nat, stderr_nat = run_vbox(
+            ["modifyvm", vm_name, f"--nic{slot}", "nat"], timeout=20.0
+        )
+        if rc_nat != 0:
+            reason = "; ".join(failures) if failures else (
+                bridge_error or "no active bridged interfaces were reported"
+            )
+            return False, adjustments, (
+                f"Could not configure destination VM NIC {slot}. Bridge attempts: "
+                f"{reason}. NAT fallback failed: {stderr_nat or stdout_nat or 'unknown error'}"
+            )
+
+        fallback_reason = (
+            "; ".join(failures) if failures
+            else (bridge_error or "no active bridged interfaces were reported")
+        )
+        adjustments.append(
+            f"NIC {slot}: switched to NAT because no usable bridge was available ({fallback_reason})."
+        )
+        logger.warning(
+            "[RPC] Destination VM '%s' NIC %s switched to NAT; no usable bridge interface was available.",
+            vm_name, slot,
+        )
+
+    return True, adjustments, None
+
+
 def resolve_vm_name(requested_name: str) -> str:
     """
     Resolves the actual VM name on this host.
@@ -922,13 +1041,28 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
 
     elif cmd == "START_VM":
         vm_name = payload.get("vm_name", "DemoVM")
+        network_ready, network_adjustments, network_error = prepare_vm_network_for_destination(vm_name)
+        for adjustment in network_adjustments:
+            logger.info("[RPC] Destination network: %s", adjustment)
+        if not network_ready:
+            return "FAILED", {"vm_name": vm_name, "network_adjustments": network_adjustments}, (
+                f"Failed to start destination VM '{vm_name}': network preparation failed: {network_error}"
+            )
+
         logger.info(f"[RPC] Booting imported VM '{vm_name}' in headless mode...")
         rc, stdout, stderr = run_vbox(["startvm", vm_name, "--type", "headless"], timeout=30.0)
         if rc != 0 and "already" not in (stderr + stdout).lower():
-            return "FAILED", {"vm_name": vm_name, "stderr": stderr, "stdout": stdout}, (
-                f"Failed to start destination VM '{vm_name}': {stderr or stdout}"
-            )
-        return "SUCCESS", {"vm_name": vm_name, "status": "started"}, None
+            return "FAILED", {
+                "vm_name": vm_name,
+                "stderr": stderr,
+                "stdout": stdout,
+                "network_adjustments": network_adjustments,
+            }, f"Failed to start destination VM '{vm_name}': {stderr or stdout}"
+        return "SUCCESS", {
+            "vm_name": vm_name,
+            "status": "started",
+            "network_adjustments": network_adjustments,
+        }, None
 
     elif cmd == "VERIFY_DESTINATION":
         vm_name = payload.get("vm_name", "DemoVM")

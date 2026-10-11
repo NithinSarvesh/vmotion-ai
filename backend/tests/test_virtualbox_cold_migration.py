@@ -270,6 +270,64 @@ def test_agent_start_vm_failure():
         assert "Failed to start destination VM" in err
 
 
+def test_agent_start_vm_remaps_unavailable_bridge_to_active_interface():
+    """START_VM remaps a source-host bridge name to an active target-host interface."""
+    calls = []
+
+    def fake_vbox(args, timeout=30.0):
+        calls.append(list(args))
+        if args[0] == "showvminfo":
+            return (0, 'VMState="poweroff"\nnic1="bridged"\nbridgeadapter1="Realtek RTL8852BE WiFi 6 802.11ax PCIe Adapter"', "")
+        if args[:2] == ["list", "bridgedifs"]:
+            return (0, "Name: Intel(R) Wi-Fi 6E AX211 160MHz\nStatus: Up\n\nName: Realtek Gaming GbE Family Controller\nStatus: Down", "")
+        if args[0] in ("modifyvm", "startvm"):
+            return (0, "OK", "")
+        return (0, "", "")
+
+    with patch("agent.run_vbox", side_effect=fake_vbox):
+        status, data, err = execute_rpc_command("START_VM", {
+            "vm_name": "VMotion-Migrated-target"
+        })
+
+    assert status == "SUCCESS"
+    assert err is None
+    assert any(
+        call[:4] == [
+            "modifyvm", "VMotion-Migrated-target", "--nic1", "bridged"
+        ] and "--bridgeadapter1" in call
+        and "Intel(R) Wi-Fi 6E AX211 160MHz" in call
+        for call in calls
+    )
+    assert any(call[:2] == ["startvm", "VMotion-Migrated-target"] for call in calls)
+    assert any("remapped unavailable bridge" in item for item in data["network_adjustments"])
+
+
+def test_agent_start_vm_uses_nat_when_no_bridged_interface_is_up():
+    """START_VM uses NAT as the portable fallback when all host bridges are down."""
+    calls = []
+
+    def fake_vbox(args, timeout=30.0):
+        calls.append(list(args))
+        if args[0] == "showvminfo":
+            return (0, 'VMState="poweroff"\nnic1="bridged"\nbridgeadapter1="Unavailable Wi-Fi"', "")
+        if args[:2] == ["list", "bridgedifs"]:
+            return (0, "Name: Disconnected Ethernet\nStatus: Down", "")
+        if args[0] in ("modifyvm", "startvm"):
+            return (0, "OK", "")
+        return (0, "", "")
+
+    with patch("agent.run_vbox", side_effect=fake_vbox):
+        status, data, err = execute_rpc_command("START_VM", {
+            "vm_name": "VMotion-Migrated-target"
+        })
+
+    assert status == "SUCCESS"
+    assert err is None
+    assert ["modifyvm", "VMotion-Migrated-target", "--nic1", "nat"] in calls
+    assert any(call[:2] == ["startvm", "VMotion-Migrated-target"] for call in calls)
+    assert any("switched to NAT" in item for item in data["network_adjustments"])
+
+
 def test_agent_verify_destination_running():
     """Verifies VERIFY_DESTINATION checks that imported VM is in running state."""
     with patch("agent.run_vbox") as mock_vbox:
@@ -325,6 +383,7 @@ async def test_provider_cold_migration_full_success():
 
     with patch.object(agent_gateway, "is_agent_online", return_value=True), \
          patch.object(agent_gateway, "get_session", return_value=mock_session), \
+         patch("app.providers.virtualbox.update_migration_job") as mock_update_job, \
          patch.object(agent_gateway, "dispatch_command") as mock_dispatch:
 
         async def fake_dispatch(agent_id, command, payload, timeout_seconds=None):
@@ -377,6 +436,7 @@ async def test_provider_cold_migration_full_success():
         assert task.imported_vm_name == "VMotion-Migrated-test1"
         assert task.verified_at is not None
         assert task.completed_at is not None
+        assert any(call.kwargs.get("imported_vm_name") == task.imported_vm_name for call in mock_update_job.call_args_list)
 
 
 @pytest.mark.asyncio
