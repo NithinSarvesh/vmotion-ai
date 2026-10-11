@@ -51,3 +51,4 @@ audit_events.jsonl
 agent_config.local.json
 agent_config*.local.json
 vmotion-agent/*.bak
+*.exe

@@ -544,14 +544,18 @@ async def get_caller_identity(
     Resolves caller identity from X-Operator-Key, X-Device-Token, or Authorization Bearer header.
     Operator keys confer administrative authority. Device tokens confer ownership of their device_id.
     """
-    # 1. Operator Key Validation
+    # 1. Operator Key or Enrollment Secret Validation
     op_candidate = x_operator_key
     if not op_candidate and authorization and authorization.startswith("Bearer "):
-        token_part = authorization[7:].strip()
-        if settings.OPERATOR_API_KEY and token_part == settings.OPERATOR_API_KEY:
-            op_candidate = token_part
+        op_candidate = authorization[7:].strip()
 
-    if settings.OPERATOR_API_KEY and op_candidate == settings.OPERATOR_API_KEY:
+    valid_operator_keys = set()
+    if settings.OPERATOR_API_KEY:
+        valid_operator_keys.add(settings.OPERATOR_API_KEY)
+    if settings.ENROLLMENT_SECRET:
+        valid_operator_keys.add(settings.ENROLLMENT_SECRET)
+
+    if op_candidate and op_candidate in valid_operator_keys:
         return CallerIdentity(is_operator=True)
 
     # 2. Device Token Validation
@@ -676,12 +680,13 @@ async def delete_device(
 
     revoke_device(device_id)
     sess = agent_gateway.get_session(device_id)
-    if sess and sess.websocket:
-        try:
-            await sess.websocket.close(code=4001, reason="Device revoked by operator")
-        except Exception:
-            pass
-        agent_gateway.unregister_agent(device_id)
+    if sess:
+        if sess.websocket:
+            try:
+                await sess.websocket.close(code=4001, reason="Device revoked by operator")
+            except Exception:
+                pass
+        await agent_gateway.unregister_agent(device_id)
 
     audit_logger.log_event(
         event_type="DEVICE_REVOKED",
@@ -724,7 +729,20 @@ async def get_published_vms(device_id: Optional[str] = None):
         else:
             vm["device_status"] = "offline"
 
-    # Augment with live VMs reported in active agent telemetry if not already in catalog
+    # Look up explicitly unpublished VMs from database so we do not resurrect them
+    unpublished_keys = set()
+    try:
+        from app.db.database import get_connection
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT vm_id, name, device_id FROM published_vms WHERE is_published = 0")
+            for r in cursor.fetchall():
+                unpublished_keys.add((r["vm_id"], r["device_id"]))
+                unpublished_keys.add((r["name"], r["device_id"]))
+    except Exception:
+        pass
+
+    # Augment with live VMs reported in active agent telemetry if not already in catalog or unpublished
     existing_vm_keys = {(v.get("vm_id"), v.get("device_id")) for v in vms}
     for did, sess in list(agent_gateway._sessions.items()):
         if device_id and did != device_id:
@@ -733,7 +751,11 @@ async def get_published_vms(device_id: Optional[str] = None):
             for avm in sess.latest_telemetry.get("vms", []):
                 aname = avm.get("name")
                 aid = avm.get("id", aname)
-                if aname and (aid, did) not in existing_vm_keys:
+                if not aname:
+                    continue
+                if (aid, did) in unpublished_keys or (aname, did) in unpublished_keys:
+                    continue
+                if (aid, did) not in existing_vm_keys:
                     vms.append({
                         "vm_id": aid,
                         "device_id": did,

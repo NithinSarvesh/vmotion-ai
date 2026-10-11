@@ -37,10 +37,12 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
 
   // Authentication & Enrollment Secrets
   const [operatorKey, setOperatorKey] = useState<string>(() => localStorage.getItem('vmotion_operator_key') || '');
+  const [enrollSecret, setEnrollSecret] = useState<string>(() => localStorage.getItem('vmotion_enroll_secret') || '');
   const operatorKeyRef = useRef<string>(operatorKey);
+  const enrollSecretRef = useRef<string>(enrollSecret);
   const activeJobIdRef = useRef<string | null>(null);
-  const [enrollSecret, setEnrollSecret] = useState<string>('');
-  const effectiveSecret = enrollSecret.trim() || '<ENROLLMENT_SECRET>';
+  const effectiveAuthKey = operatorKey.trim() || enrollSecret.trim();
+  const effectiveSecret = enrollSecret.trim() || operatorKey.trim() || '<ENROLLMENT_SECRET>';
 
   // Forms
   const [publishVmName, setPublishVmName] = useState<string>('VMotion-Demo');
@@ -62,6 +64,13 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
     fetchData(false);
   };
 
+  const handleEnrollSecretChange = (secret: string) => {
+    setEnrollSecret(secret);
+    enrollSecretRef.current = secret;
+    localStorage.setItem('vmotion_enroll_secret', secret);
+    fetchData(false);
+  };
+
   const updateActiveJobId = (jobId: string | null) => {
     setActiveJobId(jobId);
     activeJobIdRef.current = jobId;
@@ -70,7 +79,7 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
   const fetchData = async (isManual: boolean = false) => {
     try {
       if (isManual) setIsLoading(true);
-      const currentKey = operatorKeyRef.current;
+      const currentKey = operatorKeyRef.current.trim() || enrollSecretRef.current.trim();
       const opHeaders: Record<string, string> = currentKey ? { 'X-Operator-Key': currentKey } : {};
       const [devRes, vmRes, jobRes] = await Promise.all([
         fetch('/api/devices', { headers: opHeaders }).catch(() => null),
@@ -138,11 +147,12 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
     }
 
     try {
+      const authKey = effectiveAuthKey;
       const res = await fetch('/api/catalog/publish', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(operatorKey ? { 'X-Operator-Key': operatorKey } : {})
+          ...(authKey ? { 'X-Operator-Key': authKey } : {})
         },
         body: JSON.stringify({
           device_id: publishDeviceId,
@@ -154,7 +164,7 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
         setStatusMessage({ type: 'success', text: `VM '${publishVmName}' successfully published to catalog!` });
         fetchData();
       } else {
-        const data = await res.json();
+        const data = await res.json().catch(() => ({ detail: 'Failed to publish VM.' }));
         setStatusMessage({ type: 'error', text: data.detail || 'Failed to publish VM.' });
       }
     } catch (err) {
@@ -164,36 +174,46 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
 
   const handleUnpublishVm = async (deviceId: string, vmName: string) => {
     try {
+      const authKey = effectiveAuthKey;
       const res = await fetch('/api/catalog/unpublish', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(operatorKey ? { 'X-Operator-Key': operatorKey } : {})
+          ...(authKey ? { 'X-Operator-Key': authKey } : {})
         },
         body: JSON.stringify({ device_id: deviceId, vm_name: vmName })
       });
       if (res.ok) {
         setStatusMessage({ type: 'info', text: `Unpublished VM '${vmName}'.` });
         fetchData();
+      } else {
+        const data = await res.json().catch(() => ({ detail: 'Failed to unpublish VM' }));
+        setStatusMessage({ type: 'error', text: data.detail || `Failed to unpublish VM (HTTP ${res.status}). Enter your Enrollment Secret or Operator Key above.` });
       }
     } catch (err) {
       console.error('Failed to unpublish VM:', err);
+      setStatusMessage({ type: 'error', text: `Error unpublishing VM: ${err}` });
     }
   };
 
   const handleRevokeDevice = async (deviceId: string) => {
-    if (!window.confirm(`Revoke device '${deviceId}'? The agent will be disconnected.`)) return;
+    if (!window.confirm(`Revoke device '${deviceId}'? The agent will be disconnected and its published VMs removed.`)) return;
     try {
+      const authKey = effectiveAuthKey;
       const res = await fetch(`/api/devices/${deviceId}`, {
         method: 'DELETE',
-        headers: operatorKey ? { 'X-Operator-Key': operatorKey } : {}
+        headers: authKey ? { 'X-Operator-Key': authKey } : {}
       });
       if (res.ok) {
-        setStatusMessage({ type: 'info', text: `Device '${deviceId}' revoked.` });
+        setStatusMessage({ type: 'info', text: `Device '${deviceId}' revoked and removed from registry.` });
         fetchData();
+      } else {
+        const data = await res.json().catch(() => ({ detail: 'Failed to revoke device' }));
+        setStatusMessage({ type: 'error', text: data.detail || `Failed to revoke device (HTTP ${res.status}). Enter your Enrollment Secret or Operator Key above.` });
       }
     } catch (err) {
       console.error('Failed to revoke device:', err);
+      setStatusMessage({ type: 'error', text: `Error revoking device: ${err}` });
     }
   };
 
@@ -224,11 +244,12 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
     }
 
     try {
+      const authKey = effectiveAuthKey;
       const res = await fetch('/api/migrations/create', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(operatorKey ? { 'X-Operator-Key': operatorKey } : {})
+          ...(authKey ? { 'X-Operator-Key': authKey } : {})
         },
         body: JSON.stringify({
           source_device_id: srcDevice,
@@ -250,7 +271,7 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
         fetchData(false);
         if (onTriggerRefresh) onTriggerRefresh();
       } else {
-        const errData = await res.json();
+        const errData = await res.json().catch(() => ({ detail: 'Failed to trigger migration.' }));
         setStatusMessage({ type: 'error', text: errData.detail || 'Failed to trigger migration.' });
       }
     } catch (err) {
@@ -322,8 +343,8 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
             <input
               type="password"
               value={enrollSecret}
-              onChange={(e) => setEnrollSecret(e.target.value)}
-              placeholder="Optional: Enter secret to fill copy snippets"
+              onChange={(e) => handleEnrollSecretChange(e.target.value)}
+              placeholder="Enter enrollment secret or operator key"
               className="w-full rounded-lg border border-[#CBD5E1] bg-white px-3 py-1.5 text-xs font-mono text-[#0F172A] focus:border-blue-600 focus:outline-hidden"
             />
           </div>
@@ -420,9 +441,9 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
                 Run this command in PowerShell from the project root or folder containing <code className="bg-white px-1 border rounded">vmotion-agent.exe</code>:
               </p>
               <div className="relative rounded-lg bg-[#0F172A] p-3 font-mono text-xs text-emerald-400 overflow-x-auto">
-                <code>.\dist\vmotion-agent.exe --server {serverUrl} --enroll {effectiveSecret} --role both</code>
+                <code>.\dist\vmotion-agent.exe --server {serverUrl} --enroll {effectiveSecret} --role both --host-id vbox-host-a</code>
                 <button
-                  onClick={() => handleCopy(`.\\dist\\vmotion-agent.exe --server ${serverUrl} --enroll ${effectiveSecret} --role both`, 'same-cmd')}
+                  onClick={() => handleCopy(`.\\dist\\vmotion-agent.exe --server ${serverUrl} --enroll ${effectiveSecret} --role both --host-id vbox-host-a`, 'same-cmd')}
                   className="absolute right-2 top-2 rounded bg-white/10 p-1.5 text-white hover:bg-white/20 transition-colors"
                   title="Copy command"
                 >
@@ -431,7 +452,7 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
               </div>
               <div className="text-[11px] text-[#64748B] flex items-center space-x-1.5">
                 <Info className="h-3.5 w-3.5 text-blue-500 shrink-0" />
-                <span>Or run with python: <code className="bg-white px-1 border rounded text-[#0F172A]">python vmotion-agent/agent.py --server {serverUrl} --enroll {effectiveSecret}</code></span>
+                <span>Or run with python: <code className="bg-white px-1 border rounded text-[#0F172A]">python vmotion-agent/agent.py --server {serverUrl} --enroll {effectiveSecret} --role both --host-id vbox-host-a</code></span>
               </div>
             </div>
 
@@ -482,13 +503,17 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
                 Run the agent executable with <code className="bg-white px-1 border rounded">--role source</code> to enroll your computer:
               </p>
               <div className="relative rounded-lg bg-[#0F172A] p-3 font-mono text-xs text-blue-400 overflow-x-auto">
-                <code>.\vmotion-agent.exe --server {serverUrl} --enroll {effectiveSecret} --role source</code>
+                <code>.\vmotion-agent.exe --server {serverUrl} --enroll {effectiveSecret} --role source --host-id vbox-host-a</code>
                 <button
-                  onClick={() => handleCopy(`.\\vmotion-agent.exe --server ${serverUrl} --enroll ${effectiveSecret} --role source`, 'src-cmd')}
+                  onClick={() => handleCopy(`.\\vmotion-agent.exe --server ${serverUrl} --enroll ${effectiveSecret} --role source --host-id vbox-host-a`, 'src-cmd')}
                   className="absolute right-2 top-2 rounded bg-white/10 p-1.5 text-white hover:bg-white/20 transition-colors"
                 >
                   {copiedCmd === 'src-cmd' ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
                 </button>
+              </div>
+              <div className="text-[11px] text-[#64748B] flex items-center space-x-1.5">
+                <Info className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+                <span>Or run with python: <code className="bg-white px-1 border rounded text-[#0F172A]">python vmotion-agent/agent.py --server {serverUrl} --enroll {effectiveSecret} --role source --host-id vbox-host-a</code></span>
               </div>
               <p className="text-[11px] text-[#64748B]">
                 The agent will dynamically discover your active Wi-Fi LAN IP, Tailscale IP, and Oracle VirtualBox version.
@@ -556,13 +581,17 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
                 On the destination laptop, run the agent with <code className="bg-white px-1 border rounded">--role target</code>:
               </p>
               <div className="relative rounded-lg bg-[#0F172A] p-3 font-mono text-xs text-indigo-400 overflow-x-auto">
-                <code>.\vmotion-agent.exe --server {serverUrl} --enroll {effectiveSecret} --role target</code>
+                <code>.\vmotion-agent.exe --server {serverUrl} --enroll {effectiveSecret} --role target --host-id vbox-host-b</code>
                 <button
-                  onClick={() => handleCopy(`.\\vmotion-agent.exe --server ${serverUrl} --enroll ${effectiveSecret} --role target`, 'tgt-cmd')}
+                  onClick={() => handleCopy(`.\\vmotion-agent.exe --server ${serverUrl} --enroll ${effectiveSecret} --role target --host-id vbox-host-b`, 'tgt-cmd')}
                   className="absolute right-2 top-2 rounded bg-white/10 p-1.5 text-white hover:bg-white/20 transition-colors"
                 >
                   {copiedCmd === 'tgt-cmd' ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
                 </button>
+              </div>
+              <div className="text-[11px] text-[#64748B] flex items-center space-x-1.5">
+                <Info className="h-3.5 w-3.5 text-indigo-500 shrink-0" />
+                <span>Or run with python: <code className="bg-white px-1 border rounded text-[#0F172A]">python vmotion-agent/agent.py --server {serverUrl} --enroll {effectiveSecret} --role target --host-id vbox-host-b</code></span>
               </div>
             </div>
 

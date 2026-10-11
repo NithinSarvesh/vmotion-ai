@@ -1675,12 +1675,13 @@ def enroll_with_control_plane(
     rc_ver, out_ver, _ = run_vbox(["--version"])
     vbox_ver = out_ver if rc_ver == 0 else "Unknown"
 
+    default_dev_id = "vbox-host-b" if role == "target" else ("vbox-host-a" if role == "source" else f"vbox-{platform.node().lower()[:12]}")
     body = {
         "hostname": platform.node(),
         "role": role,
         "owner_name": os.getenv("USERNAME", "Windows User"),
         "enrollment_secret": enrollment_secret,
-        "device_id": device_id or HOST_ID,
+        "device_id": device_id or default_dev_id,
         "vbox_version": vbox_ver,
         "lan_ip": get_lan_ip(),
         "tailscale_ip": get_tailscale_ip()
@@ -1736,12 +1737,26 @@ if __name__ == "__main__":
             cfg["cloud_gateway_url"] = srv if "/ws/agent" in srv else f"{srv}/ws/agent"
         cfg["server_url"] = srv
 
-    if args.host_id:
-        cfg["host_id"] = args.host_id
-    if args.token:
-        cfg["agent_secret"] = args.token
     if args.role:
         cfg["role"] = args.role
+        # When switching to target role, prevent inheriting vbox-host-a from old config
+        if args.role == "target" and (not args.host_id and cfg.get("host_id") in (None, "", "vbox-host-a")):
+            cfg["host_id"] = "vbox-host-b"
+        elif args.role == "source" and (not args.host_id and cfg.get("host_id") in (None, "", "vbox-host-b")):
+            cfg["host_id"] = "vbox-host-a"
+
+    if args.host_id:
+        cfg["host_id"] = args.host_id
+    elif not cfg.get("host_id"):
+        if cfg.get("role") == "target":
+            cfg["host_id"] = "vbox-host-b"
+        elif cfg.get("role") == "source":
+            cfg["host_id"] = "vbox-host-a"
+        else:
+            cfg["host_id"] = f"vbox-{platform.node().lower()[:12]}"
+
+    if args.token:
+        cfg["agent_secret"] = args.token
 
     # 3. Handle Auto-Enrollment
     if args.enroll is not None:

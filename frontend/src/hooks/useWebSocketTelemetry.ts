@@ -234,7 +234,7 @@ export function useWebSocketTelemetry() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Operator-Key': localStorage.getItem('vmotion_operator_key') || ''
+          'X-Operator-Key': localStorage.getItem('vmotion_operator_key') || localStorage.getItem('vmotion_enroll_secret') || ''
         },
         body: JSON.stringify({
           provider_type: providerType,

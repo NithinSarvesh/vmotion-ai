@@ -222,3 +222,83 @@ def test_transfer_authorization():
     assert data["auth_token"].startswith("xfer_")
     assert "signature" in data
     assert len(data["signature"]) == 64
+
+
+def test_enrollment_secret_as_operator_auth():
+    """Verifies that ENROLLMENT_SECRET is accepted as operator authorization fallback."""
+    secret_headers = {"X-Operator-Key": settings.ENROLLMENT_SECRET}
+
+    dev_id = "test-enroll-op-dev"
+    register_device(device_id=dev_id, hostname="Enroll-Auth-Host", role="source")
+    publish_vm(device_id=dev_id, vm_id="vm-secret-auth", name="Secret-Auth-VM")
+
+    # Unpublish using ENROLLMENT_SECRET in X-Operator-Key
+    unpub = client.post("/api/catalog/unpublish", json={
+        "device_id": dev_id,
+        "vm_name": "Secret-Auth-VM"
+    }, headers=secret_headers)
+    assert unpub.status_code == 200
+    assert unpub.json()["status"] == "unpublished"
+
+    # Revoke device using ENROLLMENT_SECRET in X-Operator-Key
+    rev = client.delete(f"/api/devices/{dev_id}", headers=secret_headers)
+    assert rev.status_code == 200
+    assert rev.json()["status"] == "revoked"
+
+
+def test_revoke_device_cascades_published_vms():
+    """Verifies that revoking a device automatically purges its published VMs from the catalog."""
+    dev_id = "test-cascade-host"
+    register_device(device_id=dev_id, hostname="Cascade-Host", role="source")
+    publish_vm(device_id=dev_id, vm_id="vm-cascade-1", name="Cascade-VM-1")
+    publish_vm(device_id=dev_id, vm_id="vm-cascade-2", name="Cascade-VM-2")
+
+    # Verify VMs appear in catalog
+    cat = client.get("/api/catalog/vms").json()
+    assert any(v["name"] == "Cascade-VM-1" for v in cat)
+
+    # Revoke device with operator key
+    rev = client.delete(f"/api/devices/{dev_id}", headers={"X-Operator-Key": settings.OPERATOR_API_KEY})
+    assert rev.status_code == 200
+
+    # Verify device's VMs are no longer in catalog
+    cat_after = client.get("/api/catalog/vms").json()
+    assert not any(v["device_id"] == dev_id for v in cat_after)
+
+
+def test_unpublish_vm_tombstone_prevents_telemetry_resurrection():
+    """Verifies that an explicitly unpublished VM is not resurrected by subsequent telemetry pulses."""
+    from app.gateway.agent_gateway import agent_gateway, AgentSession
+    dev_id = "test-tombstone-dev"
+    register_device(device_id=dev_id, hostname="Tombstone-Host", role="source")
+
+    # 1. Publish VM
+    publish_vm(device_id=dev_id, vm_id="vm-tombstone", name="Tombstone-VM")
+    cat = client.get("/api/catalog/vms").json()
+    assert any(v["name"] == "Tombstone-VM" for v in cat)
+
+    # 2. Explicitly unpublish
+    unpub = client.post("/api/catalog/unpublish", json={
+        "device_id": dev_id,
+        "vm_name": "Tombstone-VM"
+    }, headers={"X-Operator-Key": settings.OPERATOR_API_KEY})
+    assert unpub.status_code == 200
+
+    # 3. Simulate incoming agent telemetry reporting the VM
+    agent_gateway._sessions[dev_id] = AgentSession(host_id=dev_id, websocket=None)
+    agent_gateway.record_telemetry(dev_id, {
+        "vms": [{
+            "vmid": "vm-tombstone",
+            "name": "Tombstone-VM",
+            "status": "running",
+            "cpu_cores": 2,
+            "ram_mb": 2048,
+            "disk_gb": 20
+        }]
+    })
+
+    # 4. Catalog should NOT have resurrected Tombstone-VM
+    cat_after = client.get("/api/catalog/vms").json()
+    assert not any(v["name"] == "Tombstone-VM" for v in cat_after)
+
+

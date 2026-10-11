@@ -302,6 +302,8 @@ def revoke_device(device_id: str, db_path: Optional[str] = None) -> bool:
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute("UPDATE devices SET is_revoked = 1, status = 'offline' WHERE device_id = ?", (device_id,))
+        # Also remove any catalog VMs published for the revoked device
+        cursor.execute("DELETE FROM published_vms WHERE device_id = ?", (device_id,))
         conn.commit()
         return cursor.rowcount > 0
 
@@ -355,14 +357,26 @@ def publish_vm(
 
 
 def unpublish_vm(vm_id: str, device_id: str, db_path: Optional[str] = None) -> bool:
+    now = time.time()
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute("""
         UPDATE published_vms SET is_published = 0, updated_at = ?
-        WHERE vm_id = ? AND device_id = ?;
-        """, (time.time(), vm_id, device_id))
+        WHERE (vm_id = ? OR name = ?) AND device_id = ?;
+        """, (now, vm_id, vm_id, device_id))
+        if cursor.rowcount > 0:
+            conn.commit()
+            return True
+
+        # If no row existed, insert a tombstone so auto-discovery respects explicit unpublish
+        cursor.execute("""
+        INSERT INTO published_vms (
+            vm_id, device_id, name, status, cpu_cores, ram_mb, disk_gb, os_type, is_published, updated_at
+        ) VALUES (?, ?, ?, 'stopped', 2, 2048.0, 20.0, 'other', 0, ?)
+        ON CONFLICT(vm_id, device_id) DO UPDATE SET is_published = 0, updated_at = excluded.updated_at;
+        """, (vm_id, device_id, vm_id, now))
         conn.commit()
-        return cursor.rowcount > 0
+        return True
 
 
 def list_published_vms(device_id: Optional[str] = None, db_path: Optional[str] = None) -> List[Dict[str, Any]]:

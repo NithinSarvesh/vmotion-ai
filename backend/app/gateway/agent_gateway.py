@@ -228,13 +228,26 @@ class CloudAgentGateway:
 
             # Auto-sync authentic VMs discovered on this host into the published catalog
             try:
-                from app.db.database import publish_vm
+                from app.db.database import get_connection, publish_vm
                 vms_list = telemetry_data.get("vms", [])
-                for vm in vms_list:
-                    vm_name = vm.get("name")
-                    if vm_name:
+                with get_connection() as conn:
+                    cursor = conn.cursor()
+                    for vm in vms_list:
+                        vm_name = vm.get("name")
+                        if not vm_name:
+                            continue
+                        vm_id = vm.get("id", vm_name)
+                        # Respect explicit unpublishing by operator
+                        cursor.execute(
+                            "SELECT is_published FROM published_vms WHERE (vm_id = ? OR name = ?) AND device_id = ?",
+                            (vm_id, vm_name, host_id)
+                        )
+                        row = cursor.fetchone()
+                        if row and row["is_published"] == 0:
+                            continue
+
                         publish_vm(
-                            vm_id=vm.get("id", vm_name),
+                            vm_id=vm_id,
                             device_id=host_id,
                             name=vm_name,
                             status=vm.get("status", "stopped"),
