@@ -226,6 +226,26 @@ class CloudAgentGateway:
             except Exception:
                 pass
 
+            # Auto-sync authentic VMs discovered on this host into the published catalog
+            try:
+                from app.db.database import publish_vm
+                vms_list = telemetry_data.get("vms", [])
+                for vm in vms_list:
+                    vm_name = vm.get("name")
+                    if vm_name:
+                        publish_vm(
+                            vm_id=vm.get("id", vm_name),
+                            device_id=host_id,
+                            name=vm_name,
+                            status=vm.get("status", "stopped"),
+                            cpu_cores=int(vm.get("cpus") or vm.get("cpu_cores") or 2),
+                            ram_mb=float(vm.get("memory_mb") or vm.get("ram_mb") or 2048.0),
+                            disk_gb=float(vm.get("disk_gb") or 20.0),
+                            os_type=vm.get("os_type", "other")
+                        )
+            except Exception as pe:
+                logger.debug(f"[Gateway] Auto-catalog sync notice: {pe}")
+
     def record_heartbeat(self, host_id: str, latency_ms: Optional[float] = None):
         session = self._sessions.get(host_id)
         if session:

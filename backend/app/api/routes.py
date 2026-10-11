@@ -723,6 +723,35 @@ async def get_published_vms(device_id: Optional[str] = None):
             vm["device_status"] = "online"
         else:
             vm["device_status"] = "offline"
+
+    # Augment with live VMs reported in active agent telemetry if not already in catalog
+    existing_vm_keys = {(v.get("vm_id"), v.get("device_id")) for v in vms}
+    for did, sess in list(agent_gateway._sessions.items()):
+        if device_id and did != device_id:
+            continue
+        if sess and sess.is_alive(settings.AGENT_HEARTBEAT_TIMEOUT_SECONDS) and sess.latest_telemetry:
+            for avm in sess.latest_telemetry.get("vms", []):
+                aname = avm.get("name")
+                aid = avm.get("id", aname)
+                if aname and (aid, did) not in existing_vm_keys:
+                    vms.append({
+                        "vm_id": aid,
+                        "device_id": did,
+                        "name": aname,
+                        "status": avm.get("status", "stopped"),
+                        "cpu_cores": int(avm.get("cpus") or avm.get("cpu_cores") or 2),
+                        "ram_mb": float(avm.get("memory_mb") or avm.get("ram_mb") or 2048.0),
+                        "disk_gb": float(avm.get("disk_gb") or 20.0),
+                        "os_type": avm.get("os_type", "other"),
+                        "is_published": 1,
+                        "updated_at": time.time(),
+                        "hostname": sess.hostname,
+                        "device_status": "online",
+                        "lan_ip": sess.lan_ip,
+                        "owner_name": "Authenticated Agent"
+                    })
+                    existing_vm_keys.add((aid, did))
+
     return vms
 
 

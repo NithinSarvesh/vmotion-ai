@@ -78,6 +78,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
 
         self._connected = False
         self._last_error: Optional[str] = None
+        self._last_connect_attempt: float = 0.0
         self._tasks: Dict[str, MigrationTaskStatus] = {}
         self._vbox_version: Optional[str] = None
 
@@ -188,9 +189,38 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                 }
             )
 
-        # Check if remote agent is accessible
+        # Check if an authoritative physical host agent is connected via Cloud Agent Gateway
+        active_sessions = [
+            s for s in agent_gateway._sessions.values()
+            if s.is_alive(settings.AGENT_HEARTBEAT_TIMEOUT_SECONDS)
+        ]
+        if active_sessions:
+            first_sess = active_sessions[0]
+            self._vbox_version = first_sess.vbox_version or "Oracle VirtualBox 7.x"
+            self._connected = True
+            self._last_error = None
+            nodes = await self.discover_nodes()
+            vms = await self.discover_vms()
+            return ProviderConnectionResult(
+                provider="virtualbox",
+                status="CONNECTED",
+                latency_ms=first_sess.ping_latency_ms or latency,
+                hypervisor_version=self._vbox_version,
+                node_count=len(nodes),
+                vm_count=len(vms),
+                message=f"Oracle VirtualBox physical host '{first_sess.host_id}' connected via Cloud Agent Gateway.",
+                details={
+                    "gateway_agents": [s.to_dict(settings.AGENT_HEARTBEAT_TIMEOUT_SECONDS) for s in active_sessions],
+                    "node_count": len(nodes),
+                    "vm_count": len(vms)
+                }
+            )
+
+        # Check if remote agent is accessible via configured HTTP endpoint (skip slow probe for localhost on cloud)
+        is_local_a = any(h in (self.host_a_url or "") for h in ("127.0.0.1", "localhost"))
+        probe_timeout = 0.2 if is_local_a else 1.5
         try:
-            async with httpx.AsyncClient(timeout=4.0) as client:
+            async with httpx.AsyncClient(timeout=probe_timeout) as client:
                 resp = await client.get(
                     f"{self.host_a_url}/agent/health",
                     headers={"X-Agent-Secret": self.agent_secret}
@@ -213,7 +243,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
             logger.debug(f"Remote agent check failed: {net_err}")
 
         self._connected = False
-        self._last_error = stderr or "VBoxManage executable not reachable"
+        self._last_error = stderr or "Awaiting connection from physical host agent via WebSocket"
         return ProviderConnectionResult(
             provider="virtualbox",
             status="UNAVAILABLE",
@@ -328,19 +358,21 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
             host_b_name = f"{session_b.hostname}{lan_str}{ts_str}"
             node_b_status = "online"
         else:
-            try:
-                async with httpx.AsyncClient(timeout=1.0) as client:
-                    resp = await client.get(
-                        f"{self.host_b_url}/agent/host",
-                        headers={"X-Agent-Secret": self.agent_secret}
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        node_b_cpu_pct = float(data.get("cpu_percent", 15.0))
-                        node_b_ram_pct = float(data.get("ram_percent", 35.0))
-                        host_b_name = data.get("hostname", "Host-B")
-            except Exception:
-                pass
+            is_local_b = any(h in (self.host_b_url or "") for h in ("127.0.0.1", "localhost", "192.168."))
+            if not is_local_b:
+                try:
+                    async with httpx.AsyncClient(timeout=0.2) as client:
+                        resp = await client.get(
+                            f"{self.host_b_url}/agent/host",
+                            headers={"X-Agent-Secret": self.agent_secret}
+                        )
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            node_b_cpu_pct = float(data.get("cpu_percent", 15.0))
+                            node_b_ram_pct = float(data.get("ram_percent", 35.0))
+                            host_b_name = data.get("hostname", "Host-B")
+                except Exception:
+                    pass
 
         node_b = NodeTelemetry(
             id="vbox-host-b",
@@ -467,50 +499,29 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
 
         # If running in cloud control plane or no local VMs, discover live VMs from connected agents
         if not vms:
-            session_a = agent_gateway.get_session(settings.HOST_A_ID)
-            if session_a and session_a.latest_telemetry:
-                agent_vms = session_a.latest_telemetry.get("vms", [])
-                for avm in agent_vms:
-                    avm_name = avm.get("name")
-                    if avm_name and not any(v.vmid == avm_name for v in vms):
-                        vms.append(VMTelemetry(
-                            vmid=avm_name,
-                            name=f"{avm_name} (Ubuntu)" if "vmotion" in avm_name.lower() else avm_name,
-                            node_id="vbox-host-a",
-                            status="running" if avm.get("status") == "running" else "stopped",
-                            cpu_cores=int(avm.get("cpus", 2)),
-                            cpu_percent=float(avm.get("cpu_percent", 25.0)),
-                            ram_allocated_mb=float(avm.get("memory_mb", 4096.0)),
-                            ram_used_mb=float(avm.get("memory_mb", 4096.0)) * 0.45,
-                            ram_percent=45.0,
-                            net_io_kbps=150.0,
-                            disk_allocated_gb=25.0,
-                            sla_priority="high",
-                            sla_max_cpu_percent=80.0,
-                            uptime_seconds=3600,
-                            migration_count=0
-                        ))
-
-            session_b = agent_gateway.get_session(settings.HOST_B_ID)
-            if session_b and session_b.latest_telemetry:
-                agent_b_vms = session_b.latest_telemetry.get("vms", [])
-                for bvm in agent_b_vms:
-                    bvm_name = bvm.get("name")
-                    if bvm_name and not any(v.vmid == bvm_name for v in vms):
-                        vms.append(VMTelemetry(
-                            vmid=bvm_name,
-                            name=bvm_name,
-                            node_id="vbox-host-b",
-                            status="running" if bvm.get("status") == "running" else "stopped",
-                            cpu_cores=int(bvm.get("cpus", 2)),
-                            cpu_percent=float(bvm.get("cpu_percent", 15.0)),
-                            ram_allocated_mb=float(bvm.get("memory_mb", 4096.0)),
-                            ram_used_mb=float(bvm.get("memory_mb", 4096.0)) * 0.35,
-                            ram_percent=35.0,
-                            net_io_kbps=80.0,
-                            disk_allocated_gb=25.0,
-                            sla_priority="standard"
-                        ))
+            for host_id, sess in list(agent_gateway._sessions.items()):
+                if sess and sess.latest_telemetry:
+                    agent_vms = sess.latest_telemetry.get("vms", [])
+                    for avm in agent_vms:
+                        avm_name = avm.get("name")
+                        if avm_name and not any(v.vmid == avm_name for v in vms):
+                            vms.append(VMTelemetry(
+                                vmid=avm_name,
+                                name=f"{avm_name} (Ubuntu)" if "vmotion" in avm_name.lower() else avm_name,
+                                node_id=host_id,
+                                status="running" if avm.get("status") == "running" else "stopped",
+                                cpu_cores=int(avm.get("cpus") or avm.get("cpu_cores") or 2),
+                                cpu_percent=float(avm.get("cpu_percent", 25.0)),
+                                ram_allocated_mb=float(avm.get("memory_mb") or avm.get("ram_mb") or 4096.0),
+                                ram_used_mb=float(avm.get("memory_mb") or avm.get("ram_mb") or 4096.0) * 0.45,
+                                ram_percent=45.0,
+                                net_io_kbps=150.0,
+                                disk_allocated_gb=float(avm.get("disk_gb", 25.0)),
+                                sla_priority="high" if "Demo" in avm_name else "standard",
+                                sla_max_cpu_percent=80.0,
+                                uptime_seconds=3600,
+                                migration_count=0
+                            ))
 
         # Discover VMs published to catalog from SQLite
         try:
@@ -560,8 +571,17 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
 
     async def collect_telemetry(self) -> ClusterState:
         """Collects live aggregated cluster telemetry for Host A and Host B."""
+        now = time.time()
         if not self._connected:
-            await self.connect()
+            if (now - self._last_connect_attempt) >= 5.0:
+                self._last_connect_attempt = now
+                await self.connect()
+        else:
+            # If running in cloud (no local vbox), verify that at least one agent is still alive
+            if not os.path.exists(self.vbox_manage_path):
+                has_alive = any(s.is_alive(settings.AGENT_HEARTBEAT_TIMEOUT_SECONDS) for s in agent_gateway._sessions.values())
+                if not has_alive:
+                    self._connected = False
 
         nodes_list = await self.discover_nodes()
         vms_list = await self.discover_vms()

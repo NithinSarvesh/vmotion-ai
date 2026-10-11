@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Laptop, 
   Server, 
@@ -37,6 +37,8 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
 
   // Authentication & Enrollment Secrets
   const [operatorKey, setOperatorKey] = useState<string>(() => localStorage.getItem('vmotion_operator_key') || '');
+  const operatorKeyRef = useRef<string>(operatorKey);
+  const activeJobIdRef = useRef<string | null>(null);
   const [enrollSecret, setEnrollSecret] = useState<string>('');
   const effectiveSecret = enrollSecret.trim() || '<ENROLLMENT_SECRET>';
 
@@ -47,7 +49,7 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
   const [targetDeviceId, setTargetDeviceId] = useState<string>('');
   const [sameComputerVm, setSameComputerVm] = useState<string>('VMotion-Demo');
   const [migrationSubmitting, setMigrationSubmitting] = useState<boolean>(false);
-  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [, setActiveJobId] = useState<string | null>(null);
   const [activeJob, setActiveJob] = useState<MigrationJob | null>(null);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
@@ -55,65 +57,72 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
 
   const handleOperatorKeyChange = (key: string) => {
     setOperatorKey(key);
+    operatorKeyRef.current = key;
     localStorage.setItem('vmotion_operator_key', key);
+    fetchData(false);
   };
 
-  const fetchData = async () => {
+  const updateActiveJobId = (jobId: string | null) => {
+    setActiveJobId(jobId);
+    activeJobIdRef.current = jobId;
+  };
+
+  const fetchData = async (isManual: boolean = false) => {
     try {
-      setIsLoading(true);
-      const opHeaders: Record<string, string> = operatorKey ? { 'X-Operator-Key': operatorKey } : {};
+      if (isManual) setIsLoading(true);
+      const currentKey = operatorKeyRef.current;
+      const opHeaders: Record<string, string> = currentKey ? { 'X-Operator-Key': currentKey } : {};
       const [devRes, vmRes, jobRes] = await Promise.all([
-        fetch('/api/devices', { headers: opHeaders }),
-        fetch('/api/catalog/vms'),
-        fetch('/api/migrations/jobs', { headers: opHeaders })
+        fetch('/api/devices', { headers: opHeaders }).catch(() => null),
+        fetch('/api/catalog/vms').catch(() => null),
+        fetch('/api/migrations/jobs', { headers: opHeaders }).catch(() => null)
       ]);
 
-      if (devRes.ok) {
+      if (devRes && devRes.ok) {
         const devData = await devRes.json();
         setDevices(devData);
-        if (devData.length > 0 && !publishDeviceId) {
-          setPublishDeviceId(devData[0].device_id);
-        }
-        if (devData.length > 0 && !targetDeviceId) {
+        if (devData.length > 0) {
+          setPublishDeviceId(prev => prev || devData[0].device_id);
           const tgt = devData.find((d: Device) => d.role === 'target' || d.role === 'both');
-          if (tgt) setTargetDeviceId(tgt.device_id);
+          if (tgt) setTargetDeviceId(prev => prev || tgt.device_id);
         }
       }
 
-      if (vmRes.ok) {
+      if (vmRes && vmRes.ok) {
         const vmData = await vmRes.json();
         setPublishedVms(vmData);
-        if (vmData.length > 0 && !selectedVmForMigration) {
-          setSelectedVmForMigration(vmData[0].name);
+        if (vmData.length > 0) {
+          setSelectedVmForMigration(prev => prev || vmData[0].name);
         }
       }
 
-      if (jobRes.ok) {
+      if (jobRes && jobRes.ok) {
         const jobData = await jobRes.json();
         setMigrationJobs(jobData);
-        if (activeJobId) {
-          const found = jobData.find((j: MigrationJob) => j.job_id === activeJobId);
+        const currentActiveId = activeJobIdRef.current;
+        if (currentActiveId) {
+          const found = jobData.find((j: MigrationJob) => j.job_id === currentActiveId);
           if (found) setActiveJob(found);
         } else if (jobData.length > 0) {
           const latest = jobData[0];
           if (['QUEUED', 'PREPARING', 'MIGRATING', 'VERIFYING'].includes(latest.state)) {
             setActiveJob(latest);
-            setActiveJobId(latest.job_id);
+            updateActiveJobId(latest.job_id);
           }
         }
       }
     } catch (err) {
       console.error('Error fetching devices/catalog:', err);
     } finally {
-      setIsLoading(false);
+      if (isManual) setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 3000);
+    fetchData(false);
+    const interval = setInterval(() => fetchData(false), 3000);
     return () => clearInterval(interval);
-  }, [activeJobId]);
+  }, []);
 
   const handleCopy = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
@@ -232,13 +241,13 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
 
       if (res.ok) {
         const job = await res.json();
-        setActiveJobId(job.job_id);
+        updateActiveJobId(job.job_id);
         setActiveJob(job);
         setStatusMessage({ 
           type: 'success', 
           text: `Migration job '${job.job_id}' started! Monitoring progress below.` 
         });
-        fetchData();
+        fetchData(false);
         if (onTriggerRefresh) onTriggerRefresh();
       } else {
         const errData = await res.json();
@@ -280,7 +289,7 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
           </a>
 
           <button
-            onClick={fetchData}
+            onClick={() => fetchData(true)}
             disabled={isLoading}
             className="inline-flex items-center space-x-1.5 rounded-lg border border-[#CBD5E1] bg-[#F8FAFC] px-3 py-2 font-mono text-xs text-[#475569] hover:bg-white transition-colors cursor-pointer"
             title="Refresh Registry &amp; Catalog"
@@ -439,6 +448,7 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
                     value={sameComputerVm}
                     onChange={(e) => setSameComputerVm(e.target.value)}
                     placeholder="VMotion-Demo"
+                    list="discovered-vms-list"
                     className="w-full rounded-lg border border-[#CBD5E1] bg-white px-3 py-2 text-xs font-mono text-[#0F172A] focus:border-emerald-600 focus:outline-hidden"
                   />
                   <span className="text-[10px] text-[#94A3B8] mt-1 block">Default created by setup: "VMotion-Demo"</span>
@@ -512,8 +522,17 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
                   value={publishVmName}
                   onChange={(e) => setPublishVmName(e.target.value)}
                   placeholder="VMotion-Demo"
+                  list="discovered-vms-list"
                   className="w-full rounded-lg border border-[#CBD5E1] bg-white px-3 py-2 text-xs font-mono text-[#0F172A]"
                 />
+                <datalist id="discovered-vms-list">
+                  {Object.values(cluster?.vms || {}).map(v => (
+                    <option key={v.vmid} value={v.vmid}>
+                      {v.name} ({v.status})
+                    </option>
+                  ))}
+                  <option value="VMotion-Demo">VMotion-Demo</option>
+                </datalist>
               </div>
 
               <button

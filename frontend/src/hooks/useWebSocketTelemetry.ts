@@ -29,6 +29,9 @@ export function useWebSocketTelemetry() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
 
+  const wsConnectedRef = useRef<boolean>(false);
+  const isMountedRef = useRef<boolean>(true);
+
   const fetchRestState = useCallback(async () => {
     try {
       const [clusterRes, telemetryRes, healthRes, aiRes, tasksRes, auditRes, agentsRes] = await Promise.all([
@@ -40,6 +43,8 @@ export function useWebSocketTelemetry() {
         fetch('/api/audit/logs?limit=25').then((r) => r.ok ? r.json() : null).catch(() => null),
         fetch('/api/gateway/agents').then((r) => r.ok ? r.json() : null).catch(() => null)
       ]);
+
+      if (!isMountedRef.current) return;
 
       if (clusterRes) setCluster(clusterRes);
       if (telemetryRes) setTelemetry(telemetryRes);
@@ -61,12 +66,21 @@ export function useWebSocketTelemetry() {
       }
       setError(null);
     } catch (err: any) {
-      setError(err.message || 'Failed to reach VMotion AI backend');
+      if (isMountedRef.current) {
+        setError(err.message || 'Failed to reach VMotion AI backend');
+      }
     }
   }, []);
 
   const connectWebSocket = useCallback(() => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const envWsUrl = (import.meta as any).env?.VITE_WS_URL;
@@ -77,11 +91,14 @@ export function useWebSocketTelemetry() {
       wsRef.current = ws;
 
       ws.onopen = () => {
+        if (!isMountedRef.current) return;
+        wsConnectedRef.current = true;
         setWsConnected(true);
         setError(null);
       };
 
       ws.onmessage = (event) => {
+        if (!isMountedRef.current) return;
         try {
           const payload: TelemetryPulsePayload = JSON.parse(event.data);
           if (payload.type === 'TELEMETRY_PULSE') {
@@ -99,41 +116,60 @@ export function useWebSocketTelemetry() {
             }
           }
         } catch {
-          // ignore
+          // ignore parsing error
         }
       };
 
       ws.onclose = () => {
-        setWsConnected(false);
+        wsConnectedRef.current = false;
+        if (isMountedRef.current) {
+          setWsConnected(false);
+        }
         wsRef.current = null;
-        reconnectTimeoutRef.current = window.setTimeout(connectWebSocket, 2500);
+        if (isMountedRef.current && !reconnectTimeoutRef.current) {
+          reconnectTimeoutRef.current = window.setTimeout(connectWebSocket, 2500);
+        }
       };
 
       ws.onerror = () => {
-        setWsConnected(false);
-        ws.close();
+        wsConnectedRef.current = false;
+        if (isMountedRef.current) {
+          setWsConnected(false);
+        }
       };
     } catch {
-      setWsConnected(false);
+      wsConnectedRef.current = false;
+      if (isMountedRef.current) {
+        setWsConnected(false);
+      }
     }
   }, []);
 
   useEffect(() => {
+    isMountedRef.current = true;
     connectWebSocket();
     fetchRestState();
 
     const fallbackInterval = setInterval(() => {
-      if (!wsConnected) {
+      if (!wsConnectedRef.current) {
         fetchRestState();
       }
-    }, 3000);
+    }, 10000);
 
     return () => {
+      isMountedRef.current = false;
       clearInterval(fallbackInterval);
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-      if (wsRef.current) wsRef.current.close();
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
-  }, [connectWebSocket, fetchRestState, wsConnected]);
+  }, [connectWebSocket, fetchRestState]);
 
   const approveProposal = async (proposalId: string) => {
     try {
