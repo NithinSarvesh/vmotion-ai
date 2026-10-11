@@ -10,7 +10,7 @@ import uuid
 import time
 import asyncio
 from fastapi import APIRouter, HTTPException, Query, Header, Depends
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 from typing import Literal, Optional, Dict, Any
 
@@ -1015,7 +1015,7 @@ async def cancel_job_endpoint(
 
 @router.get("/agent/download")
 async def download_agent():
-    """Serves the standalone Windows Agent executable or safe unavailable status."""
+    """Serves a locally packaged agent, or redirects to the latest published Windows agent."""
     dist_path = os.path.join(settings.AGENT_DIST_DIR, settings.AGENT_BINARY_NAME)
     if os.path.exists(dist_path):
         return FileResponse(
@@ -1024,17 +1024,15 @@ async def download_agent():
             media_type="application/octet-stream",
             headers={"Content-Disposition": f'attachment; filename="{settings.AGENT_BINARY_NAME}"'}
         )
-    return JSONResponse(
-        status_code=503,
-        content={
-            "available": False,
-            "status": "unavailable",
-            "message": "Standalone agent executable is currently unavailable on this server instance."
-        }
+
+    # Production Docker images do not necessarily include the locally-built EXE.
+    # GitHub Actions publishes a versioned Windows build at this stable URL.
+    return RedirectResponse(
+        url="https://github.com/NithinSarvesh/vmotion-ai/releases/latest/download/vmotion-agent.exe",
+        status_code=302,
     )
 
 
-# -----------------------------------------------------------------------------
 # Cryptographic Transfer Authorization Endpoints
 # -----------------------------------------------------------------------------
 

@@ -1,0 +1,57 @@
+name: Build and publish VMotion AI Windows agent
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "vmotion-agent/**"
+      - "scripts/build_agent.py"
+      - ".github/workflows/publish-windows-agent.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-agent:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install agent dependencies and PyInstaller
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r vmotion-agent/requirements.txt pyinstaller
+
+      - name: Build Windows executable
+        run: python scripts/build_agent.py
+
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          if (-not (Test-Path ".\dist\vmotion-agent.exe")) {
+            throw "Agent executable was not created."
+          }
+          .\dist\vmotion-agent.exe --help
+          Get-FileHash ".\dist\vmotion-agent.exe" -Algorithm SHA256
+
+      - name: Publish release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: agent-build-${{ github.run_number }}
+          name: VMotion AI Windows Agent build ${{ github.run_number }}
+          body: |
+            Automatically built Windows agent.
+            Source commit: ${{ github.sha }}
+          files: dist/vmotion-agent.exe
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
