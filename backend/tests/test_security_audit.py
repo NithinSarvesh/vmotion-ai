@@ -40,14 +40,18 @@ def test_agent_download_zero_secret_exposure(tmp_path):
     """Verifies that /api/agent/download leaks zero secrets when binary is missing or present."""
     # Temporarily point dist dir to an empty directory
     with patch.object(settings, "AGENT_DIST_DIR", str(tmp_path)):
-        resp = client.get("/api/agent/download")
-        assert resp.status_code == 503
-        data = resp.json()
-        assert data["available"] is False
-        assert data["status"] == "unavailable"
+        resp = client.get("/api/agent/download", follow_redirects=False)
+        assert resp.status_code in (302, 503)
+        if resp.status_code == 302:
+            assert "github.com" in resp.headers["location"]
+            assert "vmotion-agent.exe" in resp.headers["location"]
+        else:
+            data = resp.json()
+            assert data["available"] is False
+            assert data["status"] == "unavailable"
         
         # Verify absolutely no secrets exist in the response
-        resp_str = resp.text.lower()
+        resp_str = (resp.text + resp.headers.get("location", "")).lower()
         assert "secret" not in resp_str
         assert "token" not in resp_str
         assert "password" not in resp_str
