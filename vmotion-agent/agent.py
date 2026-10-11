@@ -1082,8 +1082,29 @@ async def cloud_gateway_client_task():
                 await ws.send(json.dumps(reg_pkt))
                 logger.info(f"[Gateway Client] Connected & Registered with Cloud Gateway as '{HOST_ID}' (LAN: {reg_pkt['lan_ip']})!")
 
-                # Concurrent telemetry pusher and command receiver
+                # Keep telemetry flowing while long RPC commands run.
                 last_telemetry_time = 0.0
+                response_queue = asyncio.Queue()
+                pending_command_tasks = set()
+
+                async def run_command_and_queue(command_id, command_name, command_payload):
+                    try:
+                        status, data, err = await asyncio.to_thread(
+                            execute_rpc_command, command_name, command_payload
+                        )
+                    except Exception as exc:
+                        logger.exception(
+                            f"[Gateway Client] RPC failed unexpectedly (corr: {command_id})"
+                        )
+                        status, data, err = "FAILED", {}, str(exc)
+
+                    await response_queue.put({
+                        "type": "COMMAND_RESPONSE",
+                        "correlation_id": command_id,
+                        "status": status,
+                        "data": data,
+                        "error": err
+                    })
 
                 while True:
                     # Non-blocking receive or timeout for telemetry push
@@ -1096,19 +1117,20 @@ async def cloud_gateway_client_task():
                             payload = packet.get("payload", {})
 
                             logger.info(f"[Gateway Client] Received command '{cmd}' (corr: {cid})")
-                            status, data, err = execute_rpc_command(cmd, payload)
-
-                            resp = {
-                                "type": "COMMAND_RESPONSE",
-                                "correlation_id": cid,
-                                "status": status,
-                                "data": data,
-                                "error": err
-                            }
-                            await ws.send(json.dumps(resp))
+                            task = asyncio.create_task(
+                                run_command_and_queue(cid, cmd, payload)
+                            )
+                            pending_command_tasks.add(task)
+                            task.add_done_callback(pending_command_tasks.discard)
 
                     except asyncio.TimeoutError:
                         pass  # Periodic tick
+
+                    # Send completed RPC responses from this loop, so all
+                    # WebSocket writes remain serialized with telemetry.
+                    while not response_queue.empty():
+                        resp = response_queue.get_nowait()
+                        await ws.send(json.dumps(resp))
 
                     # Push telemetry every 2.0 seconds
                     now = time.time()

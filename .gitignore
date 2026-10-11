@@ -46,3 +46,8 @@ audit_events.jsonl
 *.db-shm
 *.db-wal
 *.spec
+
+# Local VMotion demo configuration and backups
+agent_config.local.json
+agent_config*.local.json
+vmotion-agent/*.bak
