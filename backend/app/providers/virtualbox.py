@@ -1015,6 +1015,7 @@ class VirtualBoxProvider(BaseVirtualizationProvider):
                     command="TRANSFER_PACKAGE",
                     payload={
                         "source_path": unc_source_path,
+                        "http_url": f"http://{src_lan_ip}:8001/agent/artifacts/{ova_filename}",
                         "job_id": job_id,
                         "staging_dir": staging_dir,
                         "expected_sha256": task.sha256,

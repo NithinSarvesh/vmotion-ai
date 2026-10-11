@@ -22,6 +22,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Header, Query, Depends
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -926,6 +927,7 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
 
     elif cmd == "TRANSFER_PACKAGE":
         source_path = payload.get("source_path", "")
+        http_url = payload.get("http_url", "")
         job_id = payload.get("job_id", uuid.uuid4().hex[:8])
         staging_dir = payload.get("staging_dir", r"C:\VMotionStaging")
         expected_sha256 = payload.get("expected_sha256", "")
@@ -944,17 +946,49 @@ def execute_rpc_command(command: str, payload: Dict[str, Any]) -> Tuple[str, Any
             logger.warning(f"Could not verify disk space in staging '{staging_dir}': {e}")
 
         staged_path = os.path.join(staging_dir, f"VMotion-Migration-{job_id}.ova")
-        logger.info(f"[RPC] Transferring OVA from '{source_path}' to local staging '{staged_path}'...")
-
-        if not os.path.exists(source_path):
-            return "FAILED", {"source_path": source_path}, f"Source OVA package not found at '{source_path}'."
+        logger.info(f"[RPC] Transferring OVA package to local staging '{staged_path}'...")
 
         t0 = time.time()
-        # If source and destination paths are identical, skip redundant copy
-        if os.path.abspath(source_path) != os.path.abspath(staged_path):
-            shutil.copyfile(source_path, staged_path)
-        transfer_dur = round(time.time() - t0, 2)
+        copied = False
 
+        # Attempt 1: Direct filesystem / SMB copy (for same-computer or open Windows SMB share)
+        if source_path and os.path.exists(source_path):
+            try:
+                if os.path.abspath(source_path) != os.path.abspath(staged_path):
+                    shutil.copyfile(source_path, staged_path)
+                copied = True
+                logger.info(f"[RPC] Direct filesystem copy succeeded from '{source_path}'.")
+            except Exception as smb_err:
+                logger.warning(f"[RPC] Direct filesystem copy failed: {smb_err}. Falling back to direct HTTP stream...")
+
+        # Attempt 2: Direct HTTP streaming fallback from source agent (Port 8001)
+        if not copied:
+            if not http_url and source_path.startswith(r"\\"):
+                # Automatically extract source IP from UNC path \\<IP>\VMotionShared\<filename>
+                clean = source_path.lstrip(r"\\")
+                parts = clean.split(r"\\")
+                if len(parts) >= 3:
+                    src_ip = parts[0]
+                    artifact_name = parts[-1]
+                    http_url = f"http://{src_ip}:8001/agent/artifacts/{artifact_name}"
+
+            if http_url:
+                logger.info(f"[RPC] Downloading OVA package via direct HTTP stream from '{http_url}' to '{staged_path}'...")
+                import urllib.request
+                try:
+                    req = urllib.request.Request(http_url)
+                    with urllib.request.urlopen(req, timeout=600) as response, open(staged_path, "wb") as out_file:
+                        shutil.copyfileobj(response, out_file, length=4 * 1024 * 1024)
+                    copied = True
+                    logger.info(f"[RPC] HTTP stream download completed successfully.")
+                except Exception as http_err:
+                    return "FAILED", {"source_path": source_path, "http_url": http_url}, (
+                        f"OVA package transfer failed over both SMB and direct HTTP ({http_err})."
+                    )
+            else:
+                return "FAILED", {"source_path": source_path}, f"Source OVA package not found at '{source_path}'."
+
+        transfer_dur = round(time.time() - t0, 2)
         staged_size = os.path.getsize(staged_path) if os.path.exists(staged_path) else 0
         if staged_size == 0:
             return "FAILED", {"staged_path": staged_path}, "Transferred OVA file is 0 bytes or missing."
@@ -1516,6 +1550,28 @@ def check_storage(path: Optional[str] = Query(None), authenticated: bool = Depen
         "writable": writable,
         "accessible": (exists and writable)
     }
+
+
+@app.get("/agent/artifacts/{artifact_name}")
+async def download_artifact(artifact_name: str):
+    """Serves migration artifact (.ova) for direct LAN streaming transfer."""
+    safe_name = os.path.basename(artifact_name)
+    if not safe_name.lower().endswith(".ova"):
+        raise HTTPException(status_code=400, detail="Only .ova artifacts may be transferred.")
+
+    file_path = os.path.join(SHARED_STORAGE_PATH, safe_name)
+    if not os.path.exists(file_path):
+        staging_path = os.path.join(r"C:\VMotionStaging", safe_name)
+        if os.path.exists(staging_path):
+            file_path = staging_path
+        else:
+            raise HTTPException(status_code=404, detail=f"Artifact '{safe_name}' not found.")
+
+    return FileResponse(
+        path=file_path,
+        filename=safe_name,
+        media_type="application/octet-stream"
+    )
 
 
 def redact_secret(token: Optional[str]) -> str:
