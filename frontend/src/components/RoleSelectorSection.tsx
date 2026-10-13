@@ -438,12 +438,12 @@ export const RoleSelectorSection: React.FC<RoleSelectorSectionProps> = ({
                 </span>
               </div>
               <p className="text-xs text-[#64748B]">
-                Run this command in PowerShell from the project root or folder containing <code className="bg-white px-1 border rounded">vmotion-agent.exe</code>:
+                Run this command in PowerShell from the folder where you downloaded <code className="bg-white px-1 border rounded">vmotion-agent.exe</code>:
               </p>
               <div className="relative rounded-lg bg-[#0F172A] p-3 font-mono text-xs text-emerald-400 overflow-x-auto">
-                <code>.\dist\vmotion-agent.exe --server {serverUrl} --enroll {effectiveSecret} --role both --host-id vbox-host-a</code>
+                <code>.\vmotion-agent.exe --server {serverUrl} --enroll {effectiveSecret} --role both --host-id vbox-host-a</code>
                 <button
-                  onClick={() => handleCopy(`.\\dist\\vmotion-agent.exe --server ${serverUrl} --enroll ${effectiveSecret} --role both --host-id vbox-host-a`, 'same-cmd')}
+                  onClick={() => handleCopy(`.\\vmotion-agent.exe --server ${serverUrl} --enroll ${effectiveSecret} --role both --host-id vbox-host-a`, 'same-cmd')}
                   className="absolute right-2 top-2 rounded bg-white/10 p-1.5 text-white hover:bg-white/20 transition-colors"
                   title="Copy command"
                 >

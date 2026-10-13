@@ -38,6 +38,13 @@ COPY models/ /app/models/
 # Copy compiled frontend assets from Stage 1
 COPY --from=frontend-builder /build/frontend/dist /app/frontend/dist
 
+# Bundle the latest compiled standalone Windows Agent (.exe) directly into /app/dist
+# so /api/agent/download serves it directly from the website with HTTP 200 OK
+RUN mkdir -p /app/dist && \
+    curl -fSL "https://github.com/NithinSarvesh/vmotion-ai/releases/latest/download/vmotion-agent.exe" \
+    -o /app/dist/vmotion-agent.exe && \
+    chmod 644 /app/dist/vmotion-agent.exe
+
 # Expose HTTP/WSS Port
 EXPOSE 8000
 

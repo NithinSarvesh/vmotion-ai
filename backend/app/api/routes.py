@@ -1064,11 +1064,11 @@ async def cancel_job_endpoint(
 # Agent Packaging & Distribution Endpoint
 # -----------------------------------------------------------------------------
 
-@router.get("/agent/download")
+@router.api_route("/agent/download", methods=["GET", "HEAD"])
 async def download_agent():
-    """Serves a locally packaged agent, or redirects to the latest published Windows agent."""
+    """Serves a locally packaged agent directly from the control plane, or redirects to the latest release."""
     dist_path = os.path.join(settings.AGENT_DIST_DIR, settings.AGENT_BINARY_NAME)
-    if os.path.exists(dist_path):
+    if os.path.exists(dist_path) and os.path.getsize(dist_path) > 0:
         return FileResponse(
             path=dist_path,
             filename=settings.AGENT_BINARY_NAME,
@@ -1076,8 +1076,7 @@ async def download_agent():
             headers={"Content-Disposition": f'attachment; filename="{settings.AGENT_BINARY_NAME}"'}
         )
 
-    # Production Docker images do not necessarily include the locally-built EXE.
-    # GitHub Actions publishes a versioned Windows build at this stable URL.
+    # Fallback redirect if local binary is not present
     return RedirectResponse(
         url="https://github.com/NithinSarvesh/vmotion-ai/releases/latest/download/vmotion-agent.exe",
         status_code=302,
